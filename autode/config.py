@@ -148,11 +148,13 @@ class _ConfigClass:
     #
     # Method to treat low frequency modes (LFMs). Either standard RRHO ('igm'),
     # Truhlar's method where all frequencies below a threshold are scaled to
-    # a shifted value (see J. Phys. Chem. B, 2011, 115, 14556) or Grimme's
+    # a shifted value (see J. Phys. Chem. B, 2011, 115, 14556), Grimme's
     # method of interpolating between HO and RR (i.e. qRRHO, see
-    # Chem. Eur. J. 2012, 18, 9955)
+    # Chem. Eur. J. 2012, 18, 9955), or 'minenkov' where free rotor/vibrational
+    # interpolation is useed for U and S (i.e. mRRHO, see
+    # J. Comput. Chem., 2023 44, 1807)
     #
-    # One of: 'igm', 'truhlar', 'grimme'
+    # One of: 'igm', 'truhlar', 'grimme', 'minenkov'
     lfm_method = "grimme"
     #
     # Parameters for Grimme's method (only used when lfm_method='grimme'),
@@ -196,6 +198,9 @@ class _ConfigClass:
         #
         # Path can be unset and will be assigned if it can be found in $PATH
         path = None
+        #
+        # File extensions to copy when a calculation completes
+        copied_output_exts = [".out", ".hess", ".xyz", ".inp", ".pc"]
 
         optts_block = (
             "\n%geom\n"
@@ -401,7 +406,6 @@ class _ConfigClass:
             value = Allocation(value).to("MB")
 
         if key == "freq_scale_factor":
-
             if value is not None:
                 if not (0.0 < value <= 1.0):
                     raise ValueError(

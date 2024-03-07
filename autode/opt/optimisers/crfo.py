@@ -1,42 +1,44 @@
-"""Constrained rational function optimisation
+"""
+Constrained rational function optimisation
 
 Notation follows:
 [1] J. Baker, J. Comput. Chem., 18, 8 1080
 [2] J. Baker, J. Comput. Chem., 13, 240 Ž1992
 """
 import numpy as np
+from typing import Union
 
-from itertools import combinations
 from autode.log import logger
-from autode.values import GradientRMS, Angle
+from autode.values import GradientRMS, Distance
 from autode.opt.coordinates import CartesianCoordinates, DICWithConstraints
-from autode.opt.coordinates.internals import PIC, AnyPIC
+from autode.opt.coordinates.internals import AnyPIC
 from autode.opt.optimisers.rfo import RFOptimiser
-from autode.opt.optimisers.hessian_update import BFGSDampedUpdate, NullUpdate
-from autode.opt.coordinates.primitives import (
-    Distance,
-    BondAngle,
-    DihedralAngle,
-    ConstrainedDistance,
+from autode.opt.optimisers.hessian_update import (
+    BFGSDampedUpdate,
+    BFGSSR1Update,
 )
 
 
 class CRFOptimiser(RFOptimiser):
-    def __init__(self, init_alpha: float = 0.05, *args, **kwargs):
+    def __init__(
+        self, init_alpha: Union[Distance, float] = 0.05, *args, **kwargs
+    ):
         """
         Constrained rational function optimisation
 
         -----------------------------------------------------------------------
         Arguments:
-            init_alpha: Maximum step size
+            init_alpha: Maximum step size, assumed Angstrom if units
+                        not given
 
         See Also:
             :py:meth:`RFOOptimiser <RFOOptimiser.__init__>`
         """
         super().__init__(*args, **kwargs)
 
-        self.alpha = float(init_alpha)
-        self._hessian_update_types = [BFGSDampedUpdate, NullUpdate]
+        self.alpha = Distance(init_alpha, units="ang")
+        assert self.alpha > 0
+        self._hessian_update_types = [BFGSDampedUpdate, BFGSSR1Update]
 
     def _step(self) -> None:
         """Partitioned rational function step"""
@@ -120,65 +122,13 @@ class CRFOptimiser(RFOptimiser):
             )
 
         cartesian_coords = CartesianCoordinates(self._species.coordinates)
-        primitives = self._primitives
-
-        if len(primitives) < cartesian_coords.expected_number_of_dof:
-            logger.info(
-                "Had an incomplete set of primitives. Adding "
-                "additional distances"
-            )
-            for i, j in combinations(range(self._species.n_atoms), 2):
-                primitives.append(Distance(i, j))
+        primitives = AnyPIC.from_species(self._species)
 
         self._coords = DICWithConstraints.from_cartesian(
             x=cartesian_coords, primitives=primitives
         )
         self._coords.zero_lagrangian_multipliers()
         return None
-
-    @property
-    def _primitives(self) -> PIC:
-        """Primitive internal coordinates in this molecule"""
-        assert self._species and self._species.graph
-        logger.info("Generating primitive internal coordinates")
-        graph = self._species.graph.copy()
-
-        # Any distance constraints should also count as 'bonds' when forming
-        # the set of primitive internal coordinates, so that there is a
-        # single molecule if those distances are approaching dissociation
-        if self._species.constraints.distance is not None:
-            logger.info("Adding distance constraints as primitives")
-            for (i, j) in self._species.constraints.distance:
-                graph.add_edge(i, j)
-
-        pic = AnyPIC()
-
-        for (i, j) in sorted(graph.edges):
-
-            if (
-                self._species.constraints.distance
-                and (i, j) in self._species.constraints.distance
-            ):
-
-                r = self._species.constraints.distance[(i, j)]
-                pic.append(ConstrainedDistance(i, j, value=r))
-
-            else:
-                pic.append(Distance(i, j))
-
-        for o in range(self._species.n_atoms):
-            for (n, m) in combinations(graph.neighbors(o), r=2):
-                pic.append(BondAngle(o=o, m=m, n=n))
-
-        if self._species.n_atoms > 2 and not self._species.is_planar():
-            for dihedral in _dihedrals(self._species):
-                pic.append(dihedral)
-
-        logger.info(
-            f"Using {pic.n_constrained} constraints in {len(pic)} "
-            f"primitive internal coordinates"
-        )
-        return pic
 
     def _lambda_p_from_eigvals_and_gradient(
         self, b: np.ndarray, f: np.ndarray
@@ -215,27 +165,3 @@ class CRFOptimiser(RFOptimiser):
 
         eigenvalues = np.linalg.eigvalsh(aug_h)
         return eigenvalues[0]
-
-
-def _dihedrals(species):
-    """
-    Iterator over the dihedrals in a species. Skipping those that contain
-    bond angles close to 180 degrees (tolerance <179)
-    """
-
-    for (o, p) in species.graph.edges:
-        for m in species.graph.neighbors(o):
-            if m == p:
-                continue
-
-            if np.isclose(species.angle(m, o, p), Angle(np.pi), atol=0.04):
-                continue  # Don't add potentially ill-defined dihedrals
-
-            for n in species.graph.neighbors(p):
-                if n == o:
-                    continue
-
-                if np.isclose(species.angle(o, p, n), Angle(np.pi), atol=0.04):
-                    continue
-
-                yield DihedralAngle(m, o, p, n)

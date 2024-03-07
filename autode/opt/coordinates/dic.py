@@ -23,7 +23,7 @@ from autode.geom import proj
 from autode.log import logger
 from autode.opt.coordinates.internals import (
     PIC,
-    InverseDistances,
+    PrimitiveInverseDistances,
     InternalCoordinates,
 )
 from autode.exceptions import CoordinateTransformFailed
@@ -114,7 +114,7 @@ class DIC(InternalCoordinates):  # lgtm [py/missing-equals]
 
         if primitives is None:
             logger.info("Building DICs from all inverse distances")
-            primitives = InverseDistances.from_cartesian(x)
+            primitives = PrimitiveInverseDistances.from_cartesian(x)
 
         q = primitives(x)
         U = cls._calc_U(primitives, x)
@@ -191,7 +191,6 @@ class DIC(InternalCoordinates):  # lgtm [py/missing-equals]
         raise ValueError(f"Unknown conversion to {value}")
 
     def iadd(self, value: np.ndarray) -> "OptCoordinates":
-
         """
         Set some new internal coordinates and update the Cartesian coordinates
 
@@ -217,35 +216,42 @@ class DIC(InternalCoordinates):  # lgtm [py/missing-equals]
         q_init = self.primitives(x_k)
         x_1 = self.to("cartesian") + np.matmul(self.B_T_inv, value)
 
+        success = False
         for i in range(1, _max_back_transform_iterations + 1):
+            try:
+                x_k = x_k + np.matmul(self.B_T_inv, (s_new - s_k))
 
-            x_k = x_k + np.matmul(self.B_T_inv, (s_new - s_k))
+                # Rebuild the primitives & DIC from the back-transformed Cartesians
+                q_k = self.primitives.close_to(x_k, q_init)
+                s_k = np.matmul(self.U.T, q_k)
+                self.B = np.matmul(self.U.T, self.primitives.B)
+                self.B_T_inv = np.linalg.pinv(self.B)
 
-            # Rebuild the primitives & DIC from the back-transformed Cartesians
-            q_k = self.primitives.close_to(x_k, q_init)
-            s_k = np.matmul(self.U.T, q_k)
-            self.B = np.matmul(self.U.T, self.primitives.B)
-            self.B_T_inv = np.linalg.pinv(self.B)
+                rms_s = np.sqrt(np.mean(np.square(s_k - s_new)))
 
-            rms_s = np.sqrt(np.mean(np.square(s_k - s_new)))
-
-            if rms_s < 1e-10:
-                logger.info(
-                    f"DIC transformation converged in {i} cycle(s) "
-                    f"in {time() - start_time:.4f} s"
-                )
+            # for ill-conditioned primitives, there might be math error
+            except ArithmeticError:
                 break
 
-            if i == _max_back_transform_iterations:
-                logger.warning(
-                    f"Failed to transform in {i} cycles. "
-                    f"Final RMS(s) = {rms_s:.8f}"
+            if rms_s < 1e-10:
+                success = True
+                break
+
+        if success:
+            logger.info(
+                f"DIC transformation converged in {i} cycle(s) "
+                f"in {time() - start_time:.4f} s"
+            )
+        else:
+            logger.warning(
+                f"Failed to transform in {i} cycles. "
+                f"Final RMS(s) = {rms_s:.8f}"
+            )
+            x_k = x_1
+            if not self.allow_unconverged_back_transform:
+                raise CoordinateTransformFailed(
+                    "DIC->Cart iterative back-transform did not converge"
                 )
-                x_k = x_1
-                if not self.allow_unconverged_back_transform:
-                    raise CoordinateTransformFailed(
-                        "DIC->Cart iterative back-transform did not converge"
-                    )
 
         s_k = np.matmul(self.U.T, self.primitives(x_k))
         self.B = np.matmul(self.U.T, self.primitives.B)
@@ -466,7 +472,6 @@ def _schmidt_orthogonalise(arr: np.ndarray, *indexes: int) -> np.ndarray:
 
     # and the remaining n-m columns as the orthogonalised values
     for i in range(m, n):
-
         u_i = arr[:, i]
         for j in range(0, i):
             u_i -= proj(u[:, j], arr[:, i])

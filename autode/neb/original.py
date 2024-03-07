@@ -3,7 +3,6 @@ The theory behind this original NEB implementation is taken from
 Henkelman and H. J ́onsson, J. Chem. Phys. 113, 9978 (2000)
 """
 import numpy as np
-import matplotlib.pyplot as plt
 
 from typing import Optional, Sequence, List, Any, TYPE_CHECKING, Union, Type
 from copy import deepcopy
@@ -99,14 +98,20 @@ def total_energy(flat_coords, images, method, n_cores, plot_energies):
         f"{n_cores} total cores and {n_cores_pp} per process"
     )
 
-    # Run an energy + gradient evaluation in parallel across all images
-    with ProcessPool(max_workers=n_cores) as pool:
-        results = [
-            pool.submit(energy_gradient, images[i], method, n_cores_pp)
+    # Run an energy + gradient evaluation across all images (parallel for EST)
+    if isinstance(method, IDPP):
+        images[1:-1] = [
+            energy_gradient(images[i], method, n_cores_pp)
             for i in range(1, len(images) - 1)
         ]
+    else:
+        with ProcessPool(max_workers=n_cores) as pool:
+            results = [
+                pool.submit(energy_gradient, images[i], method, n_cores_pp)
+                for i in range(1, len(images) - 1)
+            ]
 
-        images[1:-1] = [res.result() for res in results]
+            images[1:-1] = [res.result() for res in results]
 
     images.increment()
 
@@ -355,6 +360,8 @@ class Images(Path):
         self, save=False, name="None", color=None, xlabel="NEB coordinate"
     ):
         """Plot the NEB surface"""
+        import matplotlib.pyplot as plt
+
         blues = plt.get_cmap("Blues")
 
         color = (
@@ -368,7 +375,6 @@ class Images(Path):
         """Get a flat array of all components of every atom"""
         coords = np.array([])
         for image in self:
-
             coords = np.append(coords, image.coordinates.flatten())
         return coords
 
@@ -400,7 +406,6 @@ class Images(Path):
 
 
 class NEB:
-
     _images_type: Union[Type[Images], Type["CImages"]] = Images
 
     def __init__(
@@ -585,7 +590,6 @@ class NEB:
                 sub_neb._max_atom_distance_between_images(distance_idxs)
                 > max_delta
             ):
-
                 try:
                     sub_neb = NEB.from_end_points(
                         left_image, right_image, num=n
@@ -629,14 +633,12 @@ class NEB:
 
         # Interpolate images between the starting point i=0 and end point i=n-1
         for i in range(1, n - 1):
-
             # Use a copy of the starting point for atoms, charge etc.
             species: Species = initial.copy()
 
             # For all the atoms in the species translate an amount so the
             # spacing is even between the initial and final points
             for j, atom in enumerate(species.atoms):
-
                 # Shift vector is final minus current
                 shift = final.atoms[j].coord - atom.coord
                 # then an equal spacing is the i-th point in the grid
@@ -672,6 +674,8 @@ class NEB:
             etol_per_image: Energy tolerance per image to use in the L-BFGS-B
                             minimisation
         """
+        import matplotlib.pyplot as plt
+
         self.print_geometries(name=f"{name_prefix}neb_init")
 
         # Calculate energy on the first and final points as these will not be recalc-ed
@@ -776,7 +780,6 @@ class NEB:
 
     @staticmethod
     def _raise_exception_if_any(kwargs: dict) -> None:
-
         if len(kwargs) == 0:
             return
         elif any(
