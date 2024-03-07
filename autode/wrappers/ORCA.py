@@ -88,6 +88,20 @@ def print_cartesian_constraints(inp_file, molecule):
 
     return
 
+def print_angular_constraints(inp_file, molecule):
+    """Print the angular constraints to the input file"""
+
+    if molecule.constraints.angular is None:
+        return
+
+    print("%geom Constraints", file=inp_file)
+    for key, angle in molecule.constraints.angular.items():
+        #print("{ A", *key, angle, "C }", file=inp_file)
+        print("{ A", *key, "C }", file=inp_file)
+    print("    end\nend", file=inp_file)
+
+    return
+
 
 def print_num_optimisation_steps(inp_file, molecule, calc_input):
     """If there are relatively few atoms increase the number of opt steps"""
@@ -185,6 +199,7 @@ class ORCA(autode.wrappers.methods.ExternalMethodOEGH):
             print_added_internals(inp_file, calc.input)
             print_distance_constraints(inp_file, calc.molecule)
             print_cartesian_constraints(inp_file, calc.molecule)
+            print_angular_constraints(inp_file, calc.molecule)
             print_num_optimisation_steps(inp_file, calc.molecule, calc.input)
             print_point_charges(inp_file, calc.input)
             print_default_params(inp_file)

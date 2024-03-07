@@ -201,6 +201,16 @@ def _print_constraints(inp_file, molecule):
         for i in molecule.constraints.cartesian:
             # Gaussian indexes atoms from 1
             print("X", i + 1, "F", file=inp_file)
+
+    if molecule.constraints.angular is not None:
+        for key, angle in molecule.constraints.angular.items():
+            if len(key) == 3:
+                #print("A", key[0] + 1, key[1] + 1, key[2] + 1, angle, "A", file=inp_file)
+                print("A", key[0] + 1, key[1] + 1, key[2] + 1, "F", file=inp_file)
+            elif len(key) == 4:
+                #print("D", key[0] + 1, key[1] + 1, key[2] + 1, key[3] + 1, angle, "D", file=inp_file)
+                print("D", key[0] + 1, key[1] + 1, key[2] + 1, key[3] + 1, "F", file=inp_file)
+
     return
 
 
