@@ -234,7 +234,7 @@ class AngleConstraints(MutableMapping):
     @staticmethod
     def _key_transform(key):
         """Transform the key to a sorted tuple"""
-        return tuple(sorted(key))
+        return key
 
     def __setitem__(self, key, value):
         """
