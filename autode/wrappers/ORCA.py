@@ -102,6 +102,71 @@ def print_angular_constraints(inp_file, molecule):
 
     return
 
+def print_fragment_constraints(inp_file, molecule):
+    """Print the fragment constraints to the input file"""
+
+    if molecule.fragments.fragment_constraints is None:
+        return
+    
+    print("%geom Frags", file=inp_file)
+    
+    fix_str = ""
+    relax_str = ""
+    rigid_str = ""
+    
+    if molecule.fragments.fragment_constraints.kind == 'block':
+        for frag_idx, frag_info in molecule.fragments.fragment_constraints.items():
+            frag_str = f'\t{frag_idx} ' + '{' + f'{frag_info["start"]}:{frag_info["end"]}' + '}' + ' end'
+            print(frag_str, file=inp_file)
+    
+    for frag_idx, frag_info in molecule.fragments.fragment_constraints.items():
+        if frag_info['strategy'] == 'fix':
+            if fix_str == "":
+                fix_str += "\tFixFrags {" + f"{frag_idx}"
+            else:
+                fix_str += f" {frag_idx}"
+        elif frag_info['strategy'] == 'relax':
+            if relax_str == "":
+                relax_str += "\tRelaxFrags {" + f"{frag_idx}"
+            else:
+                relax_str += f" {frag_idx}"
+        elif frag_info['strategy'] == 'rigid':
+            if rigid_str == "":
+                rigid_str += "\tRigidFrags {" + f"{frag_idx}"
+            else:
+                rigid_str += f" {frag_idx}"
+            
+    # elif molecule.fragments.fragment_constraints.kind == 'atom_idxs':
+    #     for frag_idx, frag_info in molecule.fragments.fragment_constraints.items():
+    #         frag_str = f'\t{frag_idx} ' + '{' + ','.join([str(i) for i in frag_info['atom_idxs']]) + '}' + ' end'
+    #         print(frag_str, file=inp_file)
+    #         if frag_info['strategy'] == 'fix':
+    #             if fix_str == "":
+    #                 fix_str += "\tFixFrags {" + f"{frag_idx}"
+    #             else:
+    #                 fix_str += f" {frag_idx}"
+    #         elif frag_info['strategy'] == 'relax':
+    #             if relax_str == "":
+    #                 relax_str += "\tRelaxFrags {" + f"{frag_idx}"
+    #             else:
+    #                 relax_str += f" {frag_idx}"
+    #         elif frag_info['strategy'] == 'rigid':
+    #             if rigid_str == "":
+    #                 rigid_str += "\tRigidFrags {" + f"{frag_idx}"
+    #             else:
+    #                 rigid_str += f" {frag_idx}"
+
+    if fix_str != "":
+        fix_str += "} end"
+        print(fix_str, file=inp_file)
+    if relax_str != "":
+        relax_str += "} end"
+        print(relax_str, file=inp_file)
+    if rigid_str != "":
+        rigid_str += "} end"
+        print(rigid_str, file=inp_file)
+    print("end", file=inp_file)
+
 
 def print_num_optimisation_steps(inp_file, molecule, calc_input):
     """If there are relatively few atoms increase the number of opt steps"""
@@ -163,10 +228,23 @@ def print_coordinates(inp_file, molecule):
     """Print the coordinates to the input file in the correct format"""
 
     print("*xyz", molecule.charge, molecule.mult, file=inp_file)
-    for atom in molecule.atoms:
+    for i, atom in enumerate(molecule.atoms):
+        atom_label = atom.label
+        if molecule.fragments.fragment_constraints is not None and molecule.fragments.fragment_constraints.kind == 'atom_idxs':
+            unlabeled_frag = max(molecule.fragments.fragment_constraints.keys()) + 1 if 1 in molecule.fragments.fragment_constraints.keys() else 1
+            # see if this idx is in any fragment
+            in_frag = False
+            for frag_idx, frag_info in molecule.fragments.fragment_constraints.items():
+                if i in frag_info['atom_idxs']:
+                    in_frag = True
+                    break
+            if in_frag:
+                atom_label = f'{atom.label}({frag_idx})'
+            else:
+                atom_label = f'{atom.label}({unlabeled_frag})'
         x, y, z = atom.coord
         print(
-            f"{atom.label:<3} {x:^12.8f} {y:^12.8f} {z:^12.8f}", file=inp_file
+            f"{atom_label:<3} {x:^12.8f} {y:^12.8f} {z:^12.8f}", file=inp_file
         )
     print("*", file=inp_file)
 
@@ -208,6 +286,7 @@ class ORCA(autode.wrappers.methods.ExternalMethodOEGH):
                 print(f"%pal nprocs {calc.n_cores}\nend", file=inp_file)
 
             print_coordinates(inp_file, calc.molecule)
+            print_fragment_constraints(inp_file, calc.molecule)
 
         return None
 

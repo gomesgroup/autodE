@@ -268,3 +268,140 @@ class AngleConstraints(MutableMapping):
 
     def copy(self) -> "AngleConstraints":
         return deepcopy(self)
+
+class Fragments:
+    def __init__(self, fragments: Optional[Dict] = None):
+        """
+        Constrained distances, positions and dihedrals
+
+        -----------------------------------------------------------------------
+        Arguments:
+            fragments (dict | None): Keys of: int for the fragment index
+        """
+
+        self._fragment_constraints = FragmentConstraints()
+        self.update(fragments)
+
+    def __str__(self):
+        if self._fragment_constraints == {}:
+            return "Fragments()"
+        else:
+            string = "\n"
+        for key, val in self._fragment_constraints.items():
+            val_str = str({k: v for k, v in val.items()})
+            string += f"  Fragment {key}: {val_str}\n"
+        return f"Fragments({string})"    
+    
+    def __repr__(self):
+        return self.__str__()
+    
+    @property
+    def fragment_constraints(self) -> Optional["FragmentConstraints"]:
+        return None if len(self._fragment_constraints) == 0 else self._fragment_constraints
+    
+    @fragment_constraints.setter
+    def fragment_constraints(self, value: Optional[dict]):
+        """
+        Set the distance constraints
+
+        -----------------------------------------------------------------------
+        Arguments:
+            value (dict | None): Dictionary keyed with atom indexes with values
+                                  as the distance between the two
+        """
+        if value is None:
+            self._fragment_constraints.clear()
+        else:
+            self._fragment_constraints = FragmentConstraints(value)
+   
+    def update(self, value: Optional[dict]) -> None:
+        """
+        Update the current set of fragments with new fragments
+
+        -----------------------------------------------------------------------
+        Arguments:
+            value (dict | None):
+        """
+        if value is not None:
+            self._fragment_constraints.update(FragmentConstraints(value))
+        return None
+    
+    def copy(self) -> "Fragments":
+        return deepcopy(self)
+    
+    def verify(self, m):
+        n_atoms = len(m.atoms)
+        verified = False
+        # get the highest atom index
+        if self.fragment_constraints.kind == 'block':
+            max_atom_idx = max([self.fragment_constraints[key]['end'] for key in self.fragment_constraints])
+        elif self.fragment_constraints.kind == 'atom_idxs':
+            max_atom_idx = max([self.fragment_constraints[key]['atom_idxs'] for key in self.fragment_constraints])
+        else:
+            verified = True
+        if max_atom_idx <= n_atoms:
+            verified = True
+        
+        if not verified:
+            raise ValueError(f"Fragment constraints contain atom indexes that are not in the molecule")
+
+        return verified
+        
+class FragmentConstraints(MutableMapping):
+    def __init__(self, *args, **kwargs):
+        self._store = dict()
+        self.update(dict(*args, **kwargs))  # use the free update to set keys
+
+    def __getitem__(self, key):
+        return self._store[self._key_transform(key)]
+
+    def __delitem__(self, key):
+        del self._store[self._key_transform(key)]
+
+    def __iter__(self):
+        return iter(self._store)
+
+    def __len__(self):
+        return len(self._store)
+
+    @staticmethod
+    def _key_transform(key):
+        """Transform the key to a sorted tuple"""
+        return int(key)
+
+    def __setitem__(self, key, value):
+        """
+        Set a key-value pair in the dictionary
+
+        ------------------------------------------------------------------------
+        Arguments:
+            key (int): Fragment index
+
+            value (dict): Dictionary of fragment constraints
+                          with keys of: start (int), end (int), strategy (str)
+                          or atom_idxs (list), strategy (str)
+        """
+        if not isinstance(value, dict):
+            raise ValueError(f"Value must be a dictionary, not {type(value)}")
+        
+        if all(key in value for key in ["start", "end", "strategy"]):
+            self.kind = "block"
+            # make sure start and end are integers
+            if not all(isinstance(value[key], int) for key in ["start", "end"]):
+                raise ValueError(f"Value must have keys 'start' and 'end' as integers")
+            
+        elif all(key in value for key in ["atom_idxs", "strategy"]):
+            self.kind = "atom_idxs"
+            # make sure atom_idxs is a list of integers
+            if not all(isinstance(value["atom_idxs"][i], int) for i in range(len(value["atom_idxs"]))):
+                raise ValueError(f"Value must have key 'atom_idxs' as a list of integers")
+        else:
+            raise ValueError(f"Value must have keys 'start', 'end', 'strategy' or 'atom_idxs', 'strategy'")
+        
+        if not isinstance(value["strategy"], str):
+            raise ValueError(f"Value must have key 'strategy' as a string")
+
+        self._store[self._key_transform(key)] = value
+
+    def copy(self) -> "FragmentConstraints":
+        return deepcopy(self)

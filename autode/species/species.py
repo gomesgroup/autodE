@@ -10,7 +10,7 @@ from autode import methods
 from autode.atoms import Atom, Atoms, AtomCollection
 from autode.exceptions import SolventUnavailable
 from autode.geom import calc_rmsd, get_rot_mat_euler
-from autode.constraints import Constraints
+from autode.constraints import Constraints, Fragments
 from autode.log.methods import methods as method_log
 from autode.calculations.types import CalculationType
 from autode.conformers.conformers import Conformers
@@ -92,6 +92,8 @@ class Species(AtomCollection):
         self._conformers = Conformers()
 
         self.constraints = Constraints()
+
+        self.fragments = Fragments()
 
     def __str__(self):
         """Unique species identifier"""
