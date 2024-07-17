@@ -152,6 +152,7 @@ class Molecule(Species):
             and self.charge % 2 == 0
             and self.mult == 1
         ):
+            import pdb; pdb.set_trace()
             raise ValueError(
                 "Initialised a molecule from an xyz file with  "
                 "an odd number of electrons but had an even "

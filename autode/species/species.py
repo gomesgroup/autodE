@@ -819,14 +819,14 @@ class Species(AtomCollection):
             >>> hydride.has_valid_spin_state
             True
         """
-        num_electrons = (
-            sum(atom.atomic_number for atom in self.atoms) - self.charge
-        )
-        num_unpaired_electrons = self.mult - 1
-        return (
-            num_unpaired_electrons <= num_electrons
-            and num_electrons % 2 == num_unpaired_electrons % 2
-        )
+        electrons = total_electrons(self.atoms)
+        good = False
+        num_unpaired = self.mult - 1
+        for ele_count in electrons:
+            num_electrons = ele_count - self.charge
+            if num_unpaired <= num_electrons and num_electrons % 2 == num_unpaired % 2:
+                good = True
+        return good
 
     @property
     def n_conformers(self) -> int:
