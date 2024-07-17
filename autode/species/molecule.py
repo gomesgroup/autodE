@@ -141,12 +141,17 @@ class Molecule(Species):
             if override_attrs[attr] is None and attr in title_line_attrs:
                 setattr(self, attr, title_line_attrs[attr])
 
-        electrons = total_electrons(self.atoms)
-        good = False
-        for ele_count in electrons:
-            if ele_count % 2 == 0 and self.charge % 2 == 0 and self.mult == 1:
-                good = True
-        if not good:
+        # electrons = total_electrons(self.atoms)
+        # good = False
+        # for ele_count in electrons:
+        #     if ele_count % 2 == 0 and self.charge % 2 == 0 and self.mult == 1:
+        #         good = True
+                
+        if (
+            sum(atom.atomic_number for atom in self.atoms) % 2 != 0
+            and self.charge % 2 == 0
+            and self.mult == 1
+        ):
             raise ValueError(
                 "Initialised a molecule from an xyz file with  "
                 "an odd number of electrons but had an even "
