@@ -16,7 +16,7 @@ from autode.mol_graphs import make_graph
 from autode.smiles.smiles import init_organic_smiles
 from autode.smiles.smiles import init_smiles
 from autode.species.species import Species
-from autode.utils import requires_atoms, ProcessPool
+from autode.utils import requires_atoms, ProcessPool, total_electrons
 
 
 class Molecule(Species):
@@ -141,11 +141,12 @@ class Molecule(Species):
             if override_attrs[attr] is None and attr in title_line_attrs:
                 setattr(self, attr, title_line_attrs[attr])
 
-        if (
-            sum(atom.atomic_number for atom in self.atoms) % 2 != 0
-            and self.charge % 2 == 0
-            and self.mult == 1
-        ):
+        electrons = total_electrons(self.atoms)
+        good = False
+        for ele_count in electrons:
+            if ele_count % 2 == 0 and self.charge % 2 == 0 and self.mult == 1:
+                good = True
+        if not good:
             raise ValueError(
                 "Initialised a molecule from an xyz file with  "
                 "an odd number of electrons but had an even "

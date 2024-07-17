@@ -6,3 +6,4 @@ pillow>=9.5.0
 cython
 scipy
 loky
+mendeleev

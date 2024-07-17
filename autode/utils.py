@@ -12,6 +12,7 @@ from functools import wraps
 from subprocess import Popen, PIPE, STDOUT
 from tempfile import mkdtemp
 import multiprocessing
+from mendeleev import element
 
 from autode.config import Config
 from autode.log import logger
@@ -779,3 +780,22 @@ else:
 
     def cleanup_after_timeout():
         pass
+
+
+def total_electrons(atoms):
+    total_atomic_numbers = sum(atom.atomic_number for atom in atoms)
+    transition_groups = list(range(3, 13, 1))
+    
+    contains_transition_metal = False
+    
+    for a in atoms:
+        symbol = a.label
+        group_id = element(symbol).group_id
+        if group_id in transition_groups:
+            contains_transition_metal = True
+            break
+    
+    if contains_transition_metal:
+        return [total_atomic_numbers, total_atomic_numbers + 1]
+    else:
+        return [total_atomic_numbers]
