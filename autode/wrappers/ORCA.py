@@ -96,8 +96,11 @@ def print_angular_constraints(inp_file, molecule):
 
     print("%geom Constraints", file=inp_file)
     for key, angle in molecule.constraints.angular.items():
-        #print("{ A", *key, angle, "C }", file=inp_file)
-        print("{ A", *key, "C }", file=inp_file)
+        if len(key) == 3:
+            print("{ A", *key, "C }", file=inp_file)
+        elif len(key) == 4:
+            print("{ D", *key, "C }", file=inp_file)
+
     print("    end\nend", file=inp_file)
 
     return
