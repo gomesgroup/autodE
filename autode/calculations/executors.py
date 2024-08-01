@@ -161,7 +161,6 @@ class CalculationExecutor:
         else:  # Try to set the gradient anyway
             self._no_except_set_gradient()
 
-        import pdb; pdb.set_trace()
         if isinstance(keywords, kws.HessianKeywords):
             self.molecule.hessian = self.method.hessian_from(self)
         elif not self.method.uses_external_io:  # Try to set hessian anyway
