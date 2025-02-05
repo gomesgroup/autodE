@@ -44,3 +44,22 @@ def2tzecp = ECP(
     g16="def2TZVP",
     min_atomic_number=37,
 )
+
+class GPU4PySCFBasisSet(BasisSet):
+    """Basis set for GPU4PySCF calculations"""
+    
+    def __init__(self, name):
+        super().__init__(name=name)
+        self.gpu4pyscf = name
+        self.python = name  # Add this line to match the executable name
+
+# Common basis sets available in GPU4PySCF
+cc_pvdz = GPU4PySCFBasisSet('cc-pvdz')
+cc_pvtz = GPU4PySCFBasisSet('cc-pvtz')
+cc_pvqz = GPU4PySCFBasisSet('cc-pvqz')
+aug_cc_pvdz = GPU4PySCFBasisSet('aug-cc-pvdz')
+aug_cc_pvtz = GPU4PySCFBasisSet('aug-cc-pvtz')
+aug_cc_pvqz = GPU4PySCFBasisSet('aug-cc-pvqz')
+def2_svp = GPU4PySCFBasisSet('def2-svp')
+def2_tzvp = GPU4PySCFBasisSet('def2-tzvp')
+def2_qzvp = GPU4PySCFBasisSet('def2-qzvp')

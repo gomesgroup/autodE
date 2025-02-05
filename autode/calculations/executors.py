@@ -125,26 +125,18 @@ class CalculationExecutor:
         return self.method.generate_input_for(self)
 
     def _execute_external(self) -> None:
-        """
-        Execute an external calculation i.e. one that saves a log file if it
-        has not been run, or if it did not finish with a normal termination
-        """
-        logger.info(f"Running {self.input.filename} using {self.method.name}")
-
-        if not self.input.exists:
-            raise ex.NoInputError("Input did not exist")
-
-        if self.output.exists and self.terminated_normally:
-            logger.info("Calculation already terminated normally. Skipping")
-            return None
-
+        """Execute an external electronic structure theory package"""
         if not self.method.is_available:
             raise ex.MethodUnavailable(f"{self.method} was not available")
 
-        self.output.clear()
+        # Skip input file check for methods that don't require input files
+        if self.method.requires_input and not self.input.exists:
+            raise ex.NoInputError("Input did not exist")
+
         self.method.execute(self)
 
-        return None
+        if not self.method.terminated_normally_in(self):
+            raise ex.CouldNotRunCalculation
 
     @requires_output_to_exist
     def set_properties(self) -> None:
@@ -164,10 +156,8 @@ class CalculationExecutor:
 
         if isinstance(keywords, kws.HessianKeywords):
             self.molecule.hessian = self.method.hessian_from(self)
-        elif not self.method.uses_external_io:  # Try to set hessian anyway
+        else:  # Try to set hessian anyway
             self._no_except_set_hessian()
-        else:
-            self.molecule.hessian = None
 
         try:
             self.molecule.partial_charges = self.method.partial_charges_from(

@@ -8,6 +8,8 @@ from autode.wrappers.keywords.basis_sets import (
     def2tzvp,
     def2ecp,
     def2tzecp,
+    def2_svp,
+    def2_tzvp,
 )
 from autode.wrappers.keywords.functionals import pbe0
 from autode.wrappers.keywords.dispersion import d3bj
@@ -391,6 +393,20 @@ class _ConfigClass:
         #
         # Only SMD is implemented
         implicit_solvation_type = solv.smd
+
+    class GPU4PySCF:
+        """GPU4PySCF configuration"""
+        path = "python"  # Just use the Python interpreter
+        keywords = KeywordsSet(
+            low_opt=[pbe0, def2_svp, "Opt=Loose", MaxOptCycles(10)],
+            grad=[pbe0, def2_svp, "Force"],
+            low_sp=[pbe0, def2_svp],
+            opt=[pbe0, def2_svp, "Opt"],
+            opt_ts=[pbe0, def2_svp, "Freq"],
+            hess=[pbe0, def2_svp, "Freq"],
+            sp=[pbe0, def2_tzvp],
+        )
+        implicit_solvation_type = None
 
     # =========================================================================
     # =============               End                        ==================

@@ -18,6 +18,7 @@ Python wrappers for a range of electronic structure theory codes, SMILES parsing
    * [Gaussian16](https://gaussian.com/gaussian16/)
    * [NWChem](http://www.nwchem-sw.org/index.php/Main_Page) > 6.5
    * [QChem](https://www.q-chem.com/) > 5.4
+   * [GPU4PySCF] (https://github.com/pyscf/gpu4pyscf)
 * One of:
    * [XTB](https://www.chemie.uni-bonn.de/pctc/mulliken-center/software/xtb/xtb/) > v. 6.1
    * [MOPAC](http://openmopac.net/)
@@ -97,3 +98,5 @@ If **autodE** is used in a publication please consider citing the [paper](https:
 - Daniel Hollas ([@danielhollas](https://github.com/danielhollas))
 - Nils Heunemann ([@nilsheunemann](https://github.com/NilsHeunemann))
 - Sijie Fu ([@sijiefu](https://github.com/SijieFu))
+- Robert MacKnight([@rmacknight99](https://github.com/rmacknight99))
+- Jose Regio ([@jregio](https://github.com/jregio))

@@ -7,4 +7,3 @@ cython
 scipy
 loky
 mendeleev
-xtb
