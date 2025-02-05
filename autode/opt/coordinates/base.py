@@ -12,6 +12,8 @@ if TYPE_CHECKING:
     from autode.units import Unit
     from autode.values import Gradient
     from autode.hessians import Hessian
+    from typing import Type
+    from autode.opt.optimisers.hessian_update import HessianUpdater
 
 
 class OptCoordinates(ValueArray, ABC):
@@ -205,6 +207,123 @@ class OptCoordinates(ValueArray, ABC):
         N atoms, zeroing the second derivatives if required"""
         return self._update_h_from_cart_h(arr)
 
+    def update_h_from_old_h(
+        self,
+        old_coords: "OptCoordinates",
+        hessian_update_types: List["Type[HessianUpdater]"],
+    ) -> None:
+        r"""
+        Update the Hessian :math:`H` from an old Hessian using an update
+        scheme. Requires the gradient to be set, and the old set of
+        coordinates with gradient to be available
+
+        Args:
+            old_coords (OptCoordinates): Old set of coordinates with
+                        gradient and hessian defined
+            hessian_update_types (list[type[HessianUpdater]]): A list of
+                        hessian updater classes - the first updater that
+                        meets the mathematical conditions will be used
+        """
+        assert self._g is not None
+        assert isinstance(old_coords, OptCoordinates), "Wrong type!"
+        assert old_coords._h is not None
+        assert old_coords._g is not None
+        idxs = self.active_mol_indexes
+
+        for update_type in hessian_update_types:
+            updater = update_type(
+                h=old_coords._h,
+                s=np.array(self) - np.array(old_coords),
+                y=self._g - old_coords._g,
+                subspace_idxs=idxs,
+            )
+
+            if not updater.conditions_met:
+                logger.info(f"Conditions for {update_type} not met")
+                continue
+
+            new_h = updater.updated_h
+            assert self.h_or_h_inv_has_correct_shape(new_h)
+            self._h = new_h
+            return None
+
+        raise RuntimeError(
+            "Could not update the Hessian - no suitable update strategies"
+        )
+
+    @property
+    def rfo_shift(self) -> float:
+        """
+        Get the RFO diagonal shift factor λ for the molecular Hessian that
+        can be applied (H - λI) to obtain the RFO downhill step. The shift
+        is only calculated in active subspace
+
+        Returns:
+            (float): The shift parameter
+        """
+        assert self._h is not None
+        # ignore constraint modes
+        n, _ = self._h.shape
+        idxs = self.active_mol_indexes
+        hess = self._h[:, idxs][idxs, :]
+        grad = self._g[idxs]
+
+        h_n, _ = hess.shape
+        # form the augmented Hessian in active subspace
+        aug_h = np.zeros(shape=(h_n + 1, h_n + 1))
+
+        aug_h[:h_n, :h_n] = hess
+        aug_h[-1, :h_n] = grad
+        aug_h[:h_n, -1] = grad
+
+        # first non-zero eigenvalue
+        aug_h_lmda = np.linalg.eigvalsh(aug_h)
+        rfo_lmda = aug_h_lmda[0]
+        assert abs(rfo_lmda) > 1.0e-10
+        return rfo_lmda
+
+    @property
+    def min_eigval(self) -> float:
+        """
+        Obtain the minimum eigenvalue of the molecular Hessian in
+        the active space
+
+        Returns:
+            (float): The minimum eigenvalue
+        """
+        assert self._h is not None
+        n, _ = self._h.shape
+        idxs = self.active_mol_indexes
+        hess = self._h[:, idxs][idxs, :]
+
+        eigvals = np.linalg.eigvalsh(hess)
+        assert abs(eigvals[0]) > 1.0e-10
+        return eigvals[0]
+
+    def pred_quad_delta_e(self, new_coords: np.ndarray) -> float:
+        """
+        Calculate the estimated change in energy at the new coordinates
+        based on the quadratic model (i.e. second order Taylor expansion)
+
+        Args:
+            new_coords(np.ndarray): The new coordinates
+
+        Returns:
+            (float): The predicted change in energy
+        """
+        assert self._g is not None and self._h is not None
+
+        step = np.array(new_coords) - np.array(self)
+
+        idxs = self.active_mol_indexes
+        step = step[idxs]
+        grad = self._g[idxs]
+        hess = self._h[:, idxs][idxs, :]
+
+        pred_delta = np.dot(grad, step)
+        pred_delta += 0.5 * np.linalg.multi_dot((step, hess, step))
+        return pred_delta
+
     def make_hessian_positive_definite(self) -> None:
         """
         Make the Hessian matrix positive definite by shifting eigenvalues
@@ -223,6 +342,38 @@ class OptCoordinates(ValueArray, ABC):
     @abstractmethod
     def iadd(self, value: np.ndarray) -> "OptCoordinates":
         """Inplace addition of some coordinates"""
+
+    @property
+    @abstractmethod
+    def n_constraints(self) -> int:
+        """Number of constraints in these coordinates"""
+
+    @property
+    @abstractmethod
+    def n_satisfied_constraints(self) -> int:
+        """Number of constraints that are satisfied in these coordinates"""
+
+    @property
+    @abstractmethod
+    def active_indexes(self) -> List[int]:
+        """A list of indexes which are active in this coordinate set"""
+
+    @property
+    def active_mol_indexes(self) -> List[int]:
+        """Active indexes that are actually atomic coordinates in the molecule"""
+        return [i for i in self.active_indexes if i < len(self)]
+
+    @property
+    @abstractmethod
+    def inactive_indexes(self) -> List[int]:
+        """A list of indexes which are non-active in this coordinate set"""
+
+    @property
+    @abstractmethod
+    def cart_proj_g(self) -> Optional[np.ndarray]:
+        """
+        The Cartesian gradient with any constraints projected out
+        """
 
     def __eq__(self, other):
         """Coordinates can never be identical..."""
