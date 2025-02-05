@@ -42,10 +42,41 @@ class GPU4PySCF(autode.wrappers.methods.ExternalMethodOEG):
     def is_available(self) -> bool:
         """Check if GPU4PySCF is available by trying to import it"""
         try:
+            import os
+            import nvidia_smi
+            # Initialize NVIDIA SMI
+            nvidia_smi.nvmlInit()
+            n_devices = nvidia_smi.nvmlDeviceGetCount()            
+            max_free_memory = 0
+            best_gpu = None
+            # Check each GPU
+            for i in range(n_devices):
+                handle = nvidia_smi.nvmlDeviceGetHandleByIndex(i)
+                try:
+                    info = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
+                    free_mem = info.free/1024**3  # Convert to GB
+                    name = nvidia_smi.nvmlDeviceGetName(handle).decode()
+                    
+                    if free_mem > max_free_memory:
+                        max_free_memory = free_mem
+                        best_gpu = i
+                        
+                except nvidia_smi.NVMLError:
+                    continue
+            if best_gpu is None:
+                return False        
+            # Set the GPU with most available memory
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(best_gpu)
             import gpu4pyscf
             return True
-        except ImportError:
+        
+        except (ImportError, nvidia_smi.NVMLError):
             return False
+        finally:
+            try:
+                nvidia_smi.nvmlShutdown()
+            except:
+                pass
 
     @property
     def uses_external_io(self) -> bool:

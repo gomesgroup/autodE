@@ -35,8 +35,8 @@ def test_gpu4pyscf_single_point():
     
     # Test that the calculation completed and energy was extracted
     assert calc.output.exists
-    assert calc.output.energy is not None
-    assert -76.0 < float(calc.output.energy.to('ha')) < -75.0  # Reasonable H2O energy
+    assert calc.molecule.energy is not None
+    assert -77.0 < float(calc.molecule.energy.to('ha')) < -75.0  # Reasonable H2O energy
 
 
 def test_gpu4pyscf_basis_functional():
@@ -65,7 +65,8 @@ def test_gpu4pyscf_basis_functional():
     assert calc2.terminated_normally
     
     # Energies should be different with different methods
-    assert abs(float(calc1.output.energy) - float(calc2.output.energy)) > 1E-6
+    import pdb; pdb.set_trace()
+    assert abs(float(calc1.molecule.energy) - float(calc2.molecule.energy)) > 1E-6
 
 
 def test_gpu4pyscf_opt():
@@ -89,7 +90,7 @@ def test_gpu4pyscf_opt():
     assert calc.optimiser.converged
     
     # Test that the OH bonds are now reasonable
-    opt_water = calc.get_final_molecule()
+    opt_water = calc.molecule
     oh_bonds = opt_water.distance_matrix[[0, 0], [1, 2]]
     assert all(0.9 < d < 1.0 for d in oh_bonds)  # OH bonds ~0.96 Å
 

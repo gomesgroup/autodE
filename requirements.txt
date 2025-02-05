@@ -1,5 +1,5 @@
 rdkit
-numpy
+numpy==1.26
 networkx
 matplotlib
 pillow>=9.5.0
@@ -7,3 +7,5 @@ cython
 scipy
 loky
 mendeleev
+pytest
+nvidia-ml-py3
