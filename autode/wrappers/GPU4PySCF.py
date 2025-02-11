@@ -8,13 +8,14 @@ from autode.values import PotentialEnergy, Gradient, Coordinates
 from autode.opt.optimisers.base import ExternalOptimiser
 from autode.config import Config
 from autode.exceptions import CouldNotGetProperty, NotImplementedInMethod, MethodUnavailable
+from autode.hessians import Hessian
 
 if TYPE_CHECKING:
     from autode.calculations.executors import CalculationExecutor
     from autode.opt.optimisers.base import BaseOptimiser
 
 
-class GPU4PySCF(autode.wrappers.methods.ExternalMethodOEG):
+class GPU4PySCF(autode.wrappers.methods.ExternalMethodOEGH):
     """
     GPU4PySCF wrapper for autodE.
     
@@ -37,6 +38,7 @@ class GPU4PySCF(autode.wrappers.methods.ExternalMethodOEG):
         self._mf = None  # Store the mean field object
         self._mol = None  # Store the molecule object
         self._energy = None  # Store the energy
+        self._hessian = None  # Store the Hessian matrix
 
     @property
     def is_available(self) -> bool:
@@ -55,7 +57,7 @@ class GPU4PySCF(autode.wrappers.methods.ExternalMethodOEG):
                 try:
                     info = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
                     free_mem = info.free/1024**3  # Convert to GB
-                    name = nvidia_smi.nvmlDeviceGetName(handle).decode()
+                    # name = nvidia_smi.nvmlDeviceGetName(handle).decode()
                     
                     if free_mem > max_free_memory:
                         max_free_memory = free_mem
@@ -77,6 +79,15 @@ class GPU4PySCF(autode.wrappers.methods.ExternalMethodOEG):
                 nvidia_smi.nvmlShutdown()
             except:
                 pass
+
+    # @property
+    # def is_available(self) -> bool:
+    #     """Check if GPU4PySCF is available by trying to import it"""
+    #     try:
+    #         import gpu4pyscf
+    #         return True
+    #     except ImportError:
+    #         return False
 
     @property
     def uses_external_io(self) -> bool:
@@ -124,8 +135,28 @@ class GPU4PySCF(autode.wrappers.methods.ExternalMethodOEG):
             self._mf = dft.RKS(self._mol)  # Create new RKS object with optimized geometry
             self._mf.xc = functional
             self._energy = self._mf.kernel()  # Get final energy
+
+            bohr_to_angstrom = 0.529177249
+            coords = np.array(self._mol.atom_coords()) * bohr_to_angstrom
+            for i, atom in enumerate(calc.molecule.atoms):
+                atom.coord = coords[i]
         else:
             self._energy = self._mf.kernel()
+
+            # If frequency calculation is requested, compute Hessian
+            if isinstance(calc.input.keywords, kws.HessianKeywords):
+                h = self._mf.Hessian()
+                h.auxbasis_response = 1  # Reduce auxiliary basis response level
+                h.max_memory = 2000  # Limit memory usage to 4GB
+                hess = h.kernel()
+                
+                # Set the Hessian in the molecule object
+                calc.molecule.hessian = Hessian(
+                    hess,
+                    atoms=calc.molecule.atoms,
+                    functional=calc.input.keywords.functional,
+                    units="Ha a0^-2"
+                ).to("Ha Å^-2")
 
         # Set the energy in the molecule directly
         calc.molecule.energy = PotentialEnergy(self._energy, units="Ha")
@@ -204,6 +235,18 @@ class GPU4PySCF(autode.wrappers.methods.ExternalMethodOEG):
     def requires_input(self) -> bool:
         """GPU4PySCF runs directly in Python, no input file needed"""
         return False
+
+    def hessian_from(self, calc: "CalculationExecutor") -> Hessian:
+        """Extract the Hessian from the calculation"""
+        if self._hessian is None:
+            raise CouldNotGetProperty(name="hessian")
+
+        return Hessian(
+            self._hessian,
+            atoms=calc.molecule.atoms,
+            functional=calc.input.keywords.functional,
+            units="Ha a0^-2"
+        ).to("Ha Å^-2")
 
 
 class GPU4PySCFOptimiser(ExternalOptimiser):
