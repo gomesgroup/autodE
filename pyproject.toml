@@ -23,6 +23,7 @@ dependencies = [
     "mendeleev",
     "pytest",
     "nvidia-ml-py3",
+    "xtb"
 ]
 
 [project.urls]
