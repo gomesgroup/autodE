@@ -2,6 +2,35 @@
 requires = ["setuptools", "cython"]
 build-backend = "setuptools.build_meta"
 
+[project]
+name = "autode"
+version = "1.4.4"
+description = "Automated reaction profile generation"
+authors = [
+    {name = "autodE contributors"}
+]
+requires-python = ">=3.7"
+license = {text = "MIT"}
+dependencies = [
+    "rdkit",
+    "numpy==1.26",
+    "networkx",
+    "matplotlib",
+    "pillow>=9.5.0",
+    "cython",
+    "scipy",
+    "loky",
+    "mendeleev",
+    "pytest",
+    "nvidia-ml-py3",
+]
+
+[project.urls]
+Homepage = "https://github.com/duartegroup/autodE"
+
+[project.optional-dependencies]
+dev = ["black", "pre-commit"]
+
 [tool.black]
 line-length = 79
 target-version = ['py39']
