@@ -4,6 +4,12 @@ import autode.wrappers.keywords as kws
 import autode.wrappers.methods
 from typing import List, TYPE_CHECKING
 
+# Import ORCA 6.x keyword base class for block generation
+try:
+    from autode.wrappers.keywords.orca6 import ORCA6Keywords
+except ImportError:
+    ORCA6Keywords = None
+
 from autode.utils import run_external
 from autode.hessians import Hessian
 from autode.opt.optimisers.base import ExternalOptimiser
@@ -275,6 +281,14 @@ class ORCA(autode.wrappers.methods.ExternalMethodOEGH):
 
         with open(calc.input.filename, "w") as inp_file:
             print("!", *keywords, file=inp_file)
+
+            # ORCA 6.x: Print blocks for ORCA6Keywords
+            if ORCA6Keywords is not None:
+                for keyword in calc.input.keywords:
+                    if isinstance(keyword, ORCA6Keywords):
+                        block = keyword.to_orca_block()
+                        if block:  # Only print non-empty blocks
+                            print(block, file=inp_file)
 
             self.print_solvent(inp_file, calc.molecule, keywords)
             print_added_internals(inp_file, calc.input)
@@ -584,13 +598,16 @@ class ORCA(autode.wrappers.methods.ExternalMethodOEGH):
         new_keywords = kwds_cls()
 
         for keyword in calc_input.keywords:
-            if "scalfreq" in keyword.lower():
+            # Convert keyword to string for checking
+            keyword_str = str(keyword).lower() if isinstance(keyword, kws.Keyword) else str(keyword).lower()
+
+            if "scalfreq" in keyword_str:
                 raise UnsupportedCalculationInput(
                     "Frequency scaling within ORCA will not alter the "
                     "calculated frequencies. Use ade.Config.freq_scale_factor"
                 )
 
-            if "opt" in keyword.lower() and molecule.n_atoms == 1:
+            if "opt" in keyword_str and molecule.n_atoms == 1:
                 logger.warning("Can't optimise a single atom")
                 continue
 
