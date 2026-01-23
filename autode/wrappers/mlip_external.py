@@ -27,7 +27,13 @@ from autode.wrappers.keywords.orca6 import (
     MLIPNEBKeywords,
     ONIOMKeywords,
 )
-from autode.log import logger
+
+# Try to import autodE logger, fall back to standard logging
+try:
+    from autode.log import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
 
 
 # Default MLIP server endpoints
@@ -202,10 +208,13 @@ INPUT_FILE=$1
 OUTPUT_FILE=$2
 
 # Parse XYZ from ORCA format and call MLIP server
-python3 << 'EOF'
+python3 - "$INPUT_FILE" "$OUTPUT_FILE" << 'PYTHON_EOF'
 import sys
 import json
 import urllib.request
+
+INPUT_FILE = sys.argv[1]
+OUTPUT_FILE = sys.argv[2]
 
 def parse_orca_extopt_input(filename):
     """Parse ORCA ExtOpt input file."""
@@ -231,7 +240,7 @@ def write_orca_extopt_output(filename, energy, forces):
             f.write(f"{{fx:.10f}} {{fy:.10f}} {{fz:.10f}}\\n")
 
 # Main
-atoms, coords = parse_orca_extopt_input("{OUTPUT_FILE}.xyz")
+atoms, coords = parse_orca_extopt_input(INPUT_FILE + ".xyz")
 
 payload = {{
     "atoms": atoms,
@@ -252,8 +261,8 @@ with urllib.request.urlopen(req, timeout=60) as response:
 energy = result["energy"]
 forces = result.get("forces", [[0, 0, 0]] * len(atoms))
 
-write_orca_extopt_output("{OUTPUT_FILE}", energy, forces)
-EOF
+write_orca_extopt_output(OUTPUT_FILE, energy, forces)
+PYTHON_EOF
 '''
 
     with open(output_path, "w") as f:

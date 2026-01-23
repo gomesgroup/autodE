@@ -15,7 +15,13 @@ import os
 import re
 
 from autode.wrappers.keywords.orca6 import IRCKeywords
-from autode.log import logger
+
+# Try to import autodE logger, fall back to standard logging
+try:
+    from autode.log import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
 
 
 @dataclass

@@ -9,10 +9,15 @@ This module provides comprehensive support for ORCA 6.x features including:
 - NEB-TS (Enhanced NEB with TS optimization)
 - ExtOpt (External optimizer for MLIP)
 - QM/QM2 ONIOM (Multiscale methods)
-- TS Conformer Search (GOAT + constraints)
+- TS Conformer Search (RACE-TS default, GOAT optional)
 
 Also includes support for optional RACE-TS integration for rapid TS conformer
 ensemble generation.
+
+NOTE: These classes are standalone configuration objects that generate ORCA
+input strings. They do NOT inherit from autodE's Keywords class to avoid
+conflicts with the existing keyword system. Integration with autodE happens
+at the calculation level.
 
 References:
     ORCA 6.1 Manual: https://www.faccts.de/docs/orca/6.1/manual/
@@ -22,14 +27,38 @@ References:
 from typing import Optional, List, Dict, Any, Tuple, Union
 from dataclasses import dataclass, field
 import os
-import subprocess
-import platform
 
-from autode.wrappers.keywords.keywords import Keywords, Keyword, OptKeywords
-from autode.wrappers.keywords.functionals import pbe0
-from autode.wrappers.keywords.basis_sets import def2svp, def2tzvp
-from autode.wrappers.keywords.dispersion import d3bj
-from autode.log import logger
+# Try to import autodE logger, fall back to standard logging
+try:
+    from autode.log import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Base class for ORCA 6.x keyword generators
+# ============================================================================
+
+@dataclass
+class ORCA6Keywords:
+    """
+    Base class for ORCA 6.x keyword generators.
+
+    These are NOT autodE Keywords - they are configuration objects that
+    generate ORCA input file strings.
+    """
+
+    def to_orca_keyword(self) -> str:
+        """Generate the ORCA keyword line (e.g., '!GOAT r2SCAN-3c')."""
+        raise NotImplementedError("Subclasses must implement to_orca_keyword()")
+
+    def to_orca_block(self) -> str:
+        """Generate the ORCA block section (e.g., '%goat ... end')."""
+        return ""
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}()"
 
 
 # ============================================================================
@@ -37,7 +66,7 @@ from autode.log import logger
 # ============================================================================
 
 @dataclass
-class GOATKeywords(Keywords):
+class GOATKeywords(ORCA6Keywords):
     """
     Keywords for ORCA GOAT (Global Optimization And Transition state) calculations.
 
@@ -47,221 +76,150 @@ class GOATKeywords(Keywords):
     - Reaction intermediates with GOAT_REACT
 
     Example:
-        >>> goat = GOATKeywords(goat_type="OPT", method="r2SCAN-3c", ewin=20.0)
-        >>> print(goat.to_orca_input())
+        >>> goat = GOATKeywords(goat_type="OPT", method="r2SCAN-3c")
+        >>> print(goat.to_orca_keyword())
         !GOAT_OPT r2SCAN-3c
-        %goat
-          Ewin 20.0
-          MaxOpt 100
-          MD_Length 250
-        end
-
-    For TS conformer search with constraints:
-        >>> goat = GOATKeywords(
-        ...     goat_type="OPT",
-        ...     method="XTB",
-        ...     constrain_ts=True,
-        ...     ts_constraints={'cartesian': [0, 1, 2], 'bonds': [(0, 1), (1, 2)]}
-        ... )
     """
-
     goat_type: str = "OPT"  # OPT, TS, or REACT
     method: str = "r2SCAN-3c"
+    max_steps: int = 2000
+    temperature: float = 400.0  # Kelvin
+    force_field: str = "GFN-FF"
+    ts_search: bool = False
     ewin: float = 20.0  # Energy window in kcal/mol
-    max_opt: int = 100
-    md_length: int = 250  # Metadynamics length in fs
-    ts_search_method: str = "NEB-TS"  # For GOAT_TS: NEB-TS or rmsPATH
-    n_conformers: Optional[int] = None
-
-    # TS Conformer Search options (ORCA 6.x feature)
-    constrain_ts: bool = False
-    ts_constraints: Optional[Dict[str, Any]] = None
-    freeze_bonds: bool = True  # GOAT default
-    freeze_angles: bool = True  # GOAT default
-
-    # Additional options
-    temperature: float = 300.0  # K for metadynamics
-    max_steps: int = 5000  # Max metadynamics steps
-
-    keyword_list: List[str] = field(default_factory=list)
-
-    def __post_init__(self):
-        """Validate GOAT type."""
-        valid_types = ["OPT", "TS", "REACT"]
-        if self.goat_type.upper() not in valid_types:
-            raise ValueError(f"GOAT type must be one of {valid_types}")
-        self.goat_type = self.goat_type.upper()
 
     def to_orca_keyword(self) -> str:
-        """Generate the main ORCA keyword line."""
-        return f"GOAT_{self.goat_type}"
+        if self.ts_search or self.goat_type.upper() == "TS":
+            return f"!GOAT_TS {self.method}"
+        elif self.goat_type.upper() == "REACT":
+            return f"!GOAT_REACT {self.method}"
+        else:
+            return f"!GOAT_OPT {self.method}"
 
     def to_orca_block(self) -> str:
-        """Generate the %goat block."""
-        lines = ["%goat"]
-        lines.append(f"  Ewin {self.ewin}")
-        lines.append(f"  MaxOpt {self.max_opt}")
-        lines.append(f"  MD_Length {self.md_length}")
-
-        if self.goat_type == "TS":
-            lines.append(f'  TS_Search_Method "{self.ts_search_method}"')
-
-        if self.n_conformers is not None:
-            lines.append(f"  NConformers {self.n_conformers}")
-
-        if self.temperature != 300.0:
-            lines.append(f"  Temperature {self.temperature}")
-
-        if self.max_steps != 5000:
-            lines.append(f"  MaxSteps {self.max_steps}")
-
-        # Control freeze options
-        if not self.freeze_bonds:
-            lines.append("  FreezeBonds false")
-        if not self.freeze_angles:
-            lines.append("  FreezeAngles false")
-
-        lines.append("end")
+        lines = [
+            "%goat",
+            f"  MAXSTEPS {self.max_steps}",
+            f"  TEMPERATURE {self.temperature:.1f}",
+            f"  FORCEFIELD {self.force_field}",
+            f"  EWIN {self.ewin:.1f}",
+            "end",
+        ]
         return "\n".join(lines)
 
-    def to_geom_constraints_block(self) -> str:
-        """Generate %geom constraints block for TS conformer search."""
-        if not self.constrain_ts or not self.ts_constraints:
-            return ""
-
-        lines = ["%geom", "  Constraints"]
-
-        # Add Cartesian constraints
-        if 'cartesian' in self.ts_constraints:
-            for atom_idx in self.ts_constraints['cartesian']:
-                lines.append(f"    {{ C {atom_idx} C }}")
-
-        # Add bond constraints
-        if 'bonds' in self.ts_constraints:
-            for i, j in self.ts_constraints['bonds']:
-                lines.append(f"    {{ B {i} {j} C }}")
-
-        # Add angle constraints
-        if 'angles' in self.ts_constraints:
-            for i, j, k in self.ts_constraints['angles']:
-                lines.append(f"    {{ A {i} {j} {k} C }}")
-
-        # Add dihedral constraints
-        if 'dihedrals' in self.ts_constraints:
-            for i, j, k, l in self.ts_constraints['dihedrals']:
-                lines.append(f"    {{ D {i} {j} {k} {l} C }}")
-
-        lines.append("  end")
-        lines.append("end")
-        return "\n".join(lines)
-
-    def to_orca_input(self) -> str:
-        """Generate complete ORCA input sections."""
-        parts = [f"!{self.to_orca_keyword()} {self.method}"]
-
-        for kw in self.keyword_list:
-            parts[0] += f" {kw}"
-
-        parts.append(self.to_orca_block())
-
-        if self.constrain_ts:
-            geom_block = self.to_geom_constraints_block()
-            if geom_block:
-                parts.append(geom_block)
-
-        return "\n".join(parts)
+    def __repr__(self) -> str:
+        return f"GOATKeywords(type={self.goat_type}, method={self.method})"
 
 
 # ============================================================================
-# TS Conformer Search with RACE-TS Integration
+# TS Conformer Search (RACE-TS default, GOAT optional)
 # ============================================================================
 
 @dataclass
-class TSConformerKeywords(GOATKeywords):
+class TSConformerKeywords(ORCA6Keywords):
     """
-    Keywords for transition state conformer search using GOAT with constraints.
+    TS conformer search keywords.
 
-    Optionally integrates with RACE-TS (Rapid Conformer Ensembles for TS)
-    for faster initial conformer generation before GOAT refinement.
+    Two modes available:
+    1. RACE-TS (default): Fast conformer generation using RDKit constrained
+       distance geometry. Generates ensemble quickly, then optimizes with DFT.
+    2. GOAT mode: ORCA metadynamics with frozen reaction coordinates.
+       More thorough but slower.
 
-    RACE-TS: https://github.com/digital-chemistry-laboratory/racerts
+    RACE-TS is the default because it's significantly faster for initial
+    conformer generation. Use GOAT mode (use_goat=True) when you need more
+    thorough sampling or when RACE-TS doesn't find good conformers.
 
     Example:
-        >>> ts_conf = TSConformerKeywords(
-        ...     method="XTB",
-        ...     reacting_atoms=[0, 1, 2],  # Atoms to freeze
-        ...     use_racerts=True,
-        ...     n_racerts_conformers=50,
-        ... )
+        >>> # Default: RACE-TS (fast)
+        >>> ts_kw = TSConformerKeywords(reacting_atoms=[0, 1, 2])
+        >>>
+        >>> # Optional: GOAT mode (thorough)
+        >>> ts_kw = TSConformerKeywords(reacting_atoms=[0, 1, 2], use_goat=True)
     """
-
     reacting_atoms: List[int] = field(default_factory=list)
-    use_racerts: bool = False
-    n_racerts_conformers: int = 50
-    racerts_charge: int = 0
+    use_goat: bool = False  # Default to RACE-TS (faster)
+    n_conformers: int = 50  # Number of conformers to generate
+    method: str = "r2SCAN-3c"
 
-    def __post_init__(self):
-        """Set up TS conformer search."""
-        self.goat_type = "OPT"
-        self.constrain_ts = True
-
-        # Build constraints from reacting atoms
-        if self.reacting_atoms:
-            self.ts_constraints = {
-                'cartesian': self.reacting_atoms
-            }
+    # GOAT-specific settings (only used when use_goat=True)
+    max_steps: int = 3000
+    temperature: float = 300.0
+    force_field: str = "GFN-FF"
 
     @staticmethod
     def is_racerts_available() -> bool:
-        """Check if RACE-TS is installed."""
+        """Check if RACE-TS package is installed."""
         try:
             import racerts
             return True
         except ImportError:
             return False
 
-    def generate_racerts_ensemble(
-        self,
-        xyz_file: str,
-        output_file: str = "ts_ensemble.xyz"
-    ) -> Optional[str]:
+    def to_orca_keyword(self) -> str:
+        if self.use_goat:
+            return f"!GOAT_TS {self.method}"
+        else:
+            # RACE-TS is a Python workflow, not an ORCA keyword
+            # The ORCA part is just optimization
+            return f"!Opt {self.method}"
+
+    def to_orca_block(self) -> str:
+        lines = []
+
+        if self.use_goat:
+            # GOAT mode with constraints
+            lines.append("%goat")
+            lines.append(f"  MAXSTEPS {self.max_steps}")
+            lines.append(f"  TEMPERATURE {self.temperature:.1f}")
+            lines.append(f"  FORCEFIELD {self.force_field}")
+            lines.append("end")
+
+        # Add geometry constraints to freeze reaction coordinates
+        if self.reacting_atoms:
+            lines.append("")
+            lines.append("%geom")
+            lines.append("  Constraints")
+            # Freeze bonds between reacting atoms
+            for i, atom1 in enumerate(self.reacting_atoms):
+                for atom2 in self.reacting_atoms[i+1:]:
+                    lines.append(f"    {{B {atom1} {atom2} C}}")
+            lines.append("  end")
+            lines.append("end")
+
+        return "\n".join(lines)
+
+    def generate_racerts_conformers(self, smiles: str, ts_guess_xyz: str) -> List[str]:
         """
-        Generate initial TS conformer ensemble using RACE-TS.
+        Generate TS conformers using RACE-TS.
 
         Args:
-            xyz_file: Path to TS structure XYZ file
-            output_file: Output ensemble file path
+            smiles: SMILES string of the molecule
+            ts_guess_xyz: Path to initial TS guess XYZ file
 
         Returns:
-            Path to ensemble file, or None if RACE-TS not available
+            List of XYZ file paths for generated conformers
         """
-        if not self.use_racerts:
-            return None
-
         if not self.is_racerts_available():
-            logger.warning(
+            raise ImportError(
                 "RACE-TS not installed. Install with: pip install racerts"
             )
-            return None
 
-        try:
-            from racerts import ConformerGenerator
+        import racerts
 
-            cg = ConformerGenerator()
-            ts_conformers = cg.generate_conformers(
-                file_name=xyz_file,
-                charge=self.racerts_charge,
-                reacting_atoms=self.reacting_atoms,
-                n_conformers=self.n_racerts_conformers,
-            )
-            cg.write_xyz(output_file)
+        # Generate conformers using RACE-TS
+        conformers = racerts.generate_ts_conformers(
+            smiles=smiles,
+            ts_xyz=ts_guess_xyz,
+            n_conformers=self.n_conformers,
+            frozen_atoms=self.reacting_atoms,
+        )
 
-            logger.info(f"RACE-TS generated {len(ts_conformers)} TS conformers")
-            return output_file
+        return conformers
 
-        except Exception as e:
-            logger.error(f"RACE-TS failed: {e}")
-            return None
+    def __repr__(self) -> str:
+        mode = "GOAT" if self.use_goat else "RACE-TS"
+        return f"TSConformerKeywords(mode={mode}, n_atoms={len(self.reacting_atoms)})"
 
 
 # ============================================================================
@@ -269,95 +227,42 @@ class TSConformerKeywords(GOATKeywords):
 # ============================================================================
 
 @dataclass
-class SolvatorKeywords:
+class SolvatorKeywords(ORCA6Keywords):
     """
     Keywords for ORCA SOLVATOR explicit solvation.
 
-    SOLVATOR automatically generates explicit solvation shells around a solute
-    using force field-based placement.
-
-    Supported solvents:
-        water, methanol, ethanol, acetonitrile, dmso, thf, acetone,
-        dichloromethane, chloroform, toluene, benzene, hexane,
-        diethylether, dioxane, pyridine, dmf
-
     Example:
         >>> solv = SolvatorKeywords(solvent="water", n_shells=2)
-        >>> print(solv.to_orca_block())
-        %solvator
-          Solvent "water"
-          SolvShell 2
-          ForceField "GFN-FF"
-        end
+        >>> print(solv.to_orca_keyword())
+        !SOLVATOR r2SCAN-3c
     """
-
     solvent: str = "water"
     n_shells: int = 2
+    n_solvent: int = 0  # 0 = auto-determine based on shells
+    shell_radius: float = 4.0  # Angstroms
+    method: str = "r2SCAN-3c"
     force_field: str = "GFN-FF"
 
-    # Advanced options
-    counterion: Optional[str] = None
-    n_counterions: int = 0
-    seed: Optional[int] = None
-    max_iterations: int = 1000
-    shell_radius: Optional[float] = None  # Angstrom
-
-    SUPPORTED_SOLVENTS = {
-        "water": "water", "h2o": "water",
-        "methanol": "methanol", "meoh": "methanol",
-        "ethanol": "ethanol", "etoh": "ethanol",
-        "acetonitrile": "acetonitrile", "mecn": "acetonitrile", "acn": "acetonitrile",
-        "dmso": "dmso", "dimethylsulfoxide": "dmso",
-        "thf": "thf", "tetrahydrofuran": "thf",
-        "acetone": "acetone",
-        "dichloromethane": "dichloromethane", "dcm": "dichloromethane",
-        "ch2cl2": "dichloromethane", "methylenechloride": "dichloromethane",
-        "chloroform": "chloroform", "chcl3": "chloroform",
-        "toluene": "toluene",
-        "benzene": "benzene",
-        "hexane": "hexane", "n-hexane": "hexane",
-        "diethylether": "diethylether", "ether": "diethylether", "et2o": "diethylether",
-        "dioxane": "dioxane",
-        "pyridine": "pyridine",
-        "dmf": "dmf", "dimethylformamide": "dmf",
-    }
-
-    def __post_init__(self):
-        """Validate and normalize solvent name."""
-        solvent_lower = self.solvent.lower()
-        if solvent_lower not in self.SUPPORTED_SOLVENTS:
-            raise ValueError(
-                f"Unsupported solvent: {self.solvent}. "
-                f"Supported: {list(set(self.SUPPORTED_SOLVENTS.values()))}"
-            )
-        self.solvent = self.SUPPORTED_SOLVENTS[solvent_lower]
-
     def to_orca_keyword(self) -> str:
-        """Return SOLVATOR keyword."""
-        return "SOLVATOR"
+        return f"!SOLVATOR {self.method}"
 
     def to_orca_block(self) -> str:
-        """Generate the %solvator block."""
-        lines = ["%solvator"]
-        lines.append(f'  Solvent "{self.solvent}"')
-        lines.append(f"  SolvShell {self.n_shells}")
-        lines.append(f'  ForceField "{self.force_field}"')
-
-        if self.counterion:
-            lines.append(f'  Counterion "{self.counterion}"')
-            lines.append(f"  NCounterions {self.n_counterions}")
-
-        if self.seed is not None:
-            lines.append(f"  Seed {self.seed}")
-
-        if self.max_iterations != 1000:
-            lines.append(f"  MaxIterations {self.max_iterations}")
-
-        if self.shell_radius is not None:
-            lines.append(f"  ShellRadius {self.shell_radius}")
-
-        lines.append("end")
+        lines = [
+            "%solvator",
+            f'  SOLVENT "{self.solvent}"',
+            f"  NSHELLS {self.n_shells}",
+        ]
+        if self.n_solvent > 0:
+            lines.append(f"  NSOLVENT {self.n_solvent}")
+        lines.extend([
+            f"  SHELLRADIUS {self.shell_radius:.2f}",
+            f"  FORCEFIELD {self.force_field}",
+            "end",
+        ])
         return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        return f"SolvatorKeywords(solvent={self.solvent}, shells={self.n_shells})"
 
 
 # ============================================================================
@@ -365,62 +270,41 @@ class SolvatorKeywords:
 # ============================================================================
 
 @dataclass
-class DockerKeywords:
+class DockerKeywords(ORCA6Keywords):
     """
     Keywords for ORCA DOCKER molecular docking.
 
-    DOCKER performs QM-level molecular docking to generate binding poses
-    for host-guest systems using GFNn-xTB.
-
     Example:
-        >>> docker = DockerKeywords(guest_file="ligand.xyz", poses=10)
-        >>> print(docker.to_orca_block())
-        %docker
-          GuestFile "ligand.xyz"
-          GFN 2
-          Poses 10
-          Ewin 10.0
-        end
+        >>> dock = DockerKeywords(n_structures=20)
+        >>> print(dock.to_orca_keyword())
+        !DOCKER r2SCAN-3c
     """
-
-    guest_file: str = ""
-    gfn_method: int = 2  # GFN1, GFN2, or GFN-FF
-    poses: int = 10
-    ewin: float = 10.0  # Energy window in kcal/mol
-
-    # Anchor atoms for directed docking
-    anchor_guest: Optional[int] = None
-    anchor_host: Optional[int] = None
-
-    # Advanced options
-    optimize_final: bool = True
-    seed: Optional[int] = None
+    n_structures: int = 10
+    method: str = "r2SCAN-3c"
+    force_field: str = "GFN-FF"
+    reactive_atoms_mol1: List[int] = field(default_factory=list)
+    reactive_atoms_mol2: List[int] = field(default_factory=list)
 
     def to_orca_keyword(self) -> str:
-        """Return DOCKER keyword."""
-        return "DOCKER"
+        return f"!DOCKER {self.method}"
 
     def to_orca_block(self) -> str:
-        """Generate the %docker block."""
-        lines = ["%docker"]
-        lines.append(f'  GuestFile "{self.guest_file}"')
-        lines.append(f"  GFN {self.gfn_method}")
-        lines.append(f"  Poses {self.poses}")
-        lines.append(f"  Ewin {self.ewin}")
-
-        if self.anchor_guest is not None:
-            lines.append(f"  AnchorGuest {self.anchor_guest}")
-        if self.anchor_host is not None:
-            lines.append(f"  AnchorHost {self.anchor_host}")
-
-        if not self.optimize_final:
-            lines.append("  OptimizeFinal false")
-
-        if self.seed is not None:
-            lines.append(f"  Seed {self.seed}")
-
+        lines = [
+            "%docker",
+            f"  NSTRUCTURES {self.n_structures}",
+            f"  FORCEFIELD {self.force_field}",
+        ]
+        if self.reactive_atoms_mol1:
+            atoms = " ".join(str(a) for a in self.reactive_atoms_mol1)
+            lines.append(f"  REACTIVE1 {{{atoms}}}")
+        if self.reactive_atoms_mol2:
+            atoms = " ".join(str(a) for a in self.reactive_atoms_mol2)
+            lines.append(f"  REACTIVE2 {{{atoms}}}")
         lines.append("end")
         return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        return f"DockerKeywords(n={self.n_structures})"
 
 
 # ============================================================================
@@ -428,69 +312,41 @@ class DockerKeywords:
 # ============================================================================
 
 @dataclass
-class IRCKeywords(Keywords):
+class IRCKeywords(ORCA6Keywords):
     """
-    Keywords for ORCA IRC (Intrinsic Reaction Coordinate) calculations.
-
-    IRC traces the minimum energy path from a transition state to both
-    reactants and products.
-
-    Algorithms:
-        - LQA: Local Quadratic Approximation (default, most reactions)
-        - EULER: Simple Euler stepping (fast exploration)
-        - MN: Morokuma-Newton (high accuracy)
+    Keywords for ORCA IRC (Intrinsic Reaction Coordinate).
 
     Example:
-        >>> irc = IRCKeywords(direction="BOTH", algorithm="LQA")
-        >>> print(irc.to_orca_block())
-        %irc
-          Direction BOTH
-          MaxIter 100
-          StepSize 0.1
-          Algorithm LQA
-        end
+        >>> irc = IRCKeywords(direction="both", max_iter=50)
+        >>> print(irc.to_orca_keyword())
+        !IRC r2SCAN-3c
     """
-
-    direction: str = "BOTH"  # FORWARD, BACKWARD, BOTH
-    max_iter: int = 100
-    step_size: float = 0.1  # Bohr*sqrt(amu)
-    algorithm: str = "LQA"  # LQA, EULER, MN
-
-    # Advanced options
-    print_level: int = 1
-    hess_update: str = "BFGS"
-
-    keyword_list: List[str] = field(default_factory=list)
-
-    def __post_init__(self):
-        """Validate parameters."""
-        valid_dirs = ["FORWARD", "BACKWARD", "BOTH"]
-        if self.direction.upper() not in valid_dirs:
-            raise ValueError(f"Direction must be one of {valid_dirs}")
-        self.direction = self.direction.upper()
-
-        valid_algos = ["LQA", "EULER", "MN"]
-        if self.algorithm.upper() not in valid_algos:
-            raise ValueError(f"Algorithm must be one of {valid_algos}")
-        self.algorithm = self.algorithm.upper()
+    direction: str = "both"  # "forward", "backward", or "both"
+    max_iter: int = 50
+    step_size: float = 0.1  # Bohr
+    method: str = "r2SCAN-3c"
 
     def to_orca_keyword(self) -> str:
-        """Return IRC keyword."""
-        return "IRC"
+        return f"!IRC {self.method}"
 
     def to_orca_block(self) -> str:
-        """Generate the %irc block."""
-        lines = ["%irc"]
-        lines.append(f"  Direction {self.direction}")
-        lines.append(f"  MaxIter {self.max_iter}")
-        lines.append(f"  StepSize {self.step_size}")
-        lines.append(f"  Algorithm {self.algorithm}")
-
-        if self.print_level != 1:
-            lines.append(f"  PrintLevel {self.print_level}")
-
+        lines = [
+            "%irc",
+            f"  MaxIter {self.max_iter}",
+            f"  InitHess calc_anfreq",  # Use analytical frequencies
+            f"  StepSize {self.step_size:.4f}",
+        ]
+        if self.direction.lower() == "forward":
+            lines.append("  Direction Forward")
+        elif self.direction.lower() == "backward":
+            lines.append("  Direction Backward")
+        else:
+            lines.append("  Direction Both")
         lines.append("end")
         return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        return f"IRCKeywords(direction={self.direction})"
 
 
 # ============================================================================
@@ -498,283 +354,210 @@ class IRCKeywords(Keywords):
 # ============================================================================
 
 @dataclass
-class NEBKeywords:
+class NEBKeywords(ORCA6Keywords):
     """
-    Keywords for ORCA NEB-TS calculations.
-
-    NEB-TS combines Nudged Elastic Band with transition state optimization.
-    ORCA 6.x introduces the NEB_TS_XYZ input format.
+    Keywords for ORCA NEB (Nudged Elastic Band) calculations.
 
     Example:
-        >>> neb = NEBKeywords(n_images=12, interpolation="IDPP")
-        >>> print(neb.to_block())
-        %neb
-          NImages 12
-          Spring 0.0100
-          TS_Search_Algo EF
-          Interpolation IDPP
-          PreOpt true
-          MaxIter 500
-        end
+        >>> neb = NEBKeywords(n_images=12, ts_search=True)
+        >>> print(neb.to_orca_keyword())
+        !NEB-TS r2SCAN-3c
     """
+    n_images: int = 12
+    spring_constant: float = 0.05
+    climbing_image: bool = True
+    ts_search: bool = False
+    method: str = "r2SCAN-3c"
 
-    n_images: int = 8
-    spring: float = 0.01  # Eh/Bohr^2
-    ts_search_algo: str = "EF"  # EF or P-RFO
-    interpolation: str = "IDPP"  # Linear or IDPP
-    free_end: bool = False
-    preopt: bool = True
-    max_iter: int = 500
+    def to_orca_keyword(self) -> str:
+        if self.ts_search:
+            return f"!NEB-TS {self.method}"
+        elif self.climbing_image:
+            return f"!NEB-CI {self.method}"
+        else:
+            return f"!NEB {self.method}"
 
-    # Advanced options
-    optimize_endpoints: bool = False
-    ts_opt_maxiter: int = 100
-
-    def to_block(self) -> str:
-        """Generate the %neb block."""
-        lines = ["%neb"]
-        lines.append(f"  NImages {self.n_images}")
-        lines.append(f"  Spring {self.spring:.4f}")
-        lines.append(f"  TS_Search_Algo {self.ts_search_algo}")
-        lines.append(f"  Interpolation {self.interpolation}")
-        lines.append(f"  Free_End {'true' if self.free_end else 'false'}")
-        lines.append(f"  PreOpt {'true' if self.preopt else 'false'}")
-        lines.append(f"  MaxIter {self.max_iter}")
-
-        if self.optimize_endpoints:
-            lines.append("  Optimize_Endpoints true")
-
-        if self.ts_opt_maxiter != 100:
-            lines.append(f"  TS_Opt_MaxIter {self.ts_opt_maxiter}")
-
+    def to_orca_block(self) -> str:
+        lines = [
+            "%neb",
+            f"  NImages {self.n_images}",
+            f"  Spring {self.spring_constant:.4f}",
+        ]
+        if self.climbing_image:
+            lines.append("  CI True")
         lines.append("end")
         return "\n".join(lines)
 
-    def to_neb_ts_xyz_block(
-        self,
-        reactant_file: str,
-        product_file: str,
-        charge: int,
-        mult: int
-    ) -> str:
-        """Generate NEB_TS_XYZ coordinate block (ORCA 6.x format)."""
-        return f"*NEB_TS_XYZ {charge} {mult}\n{reactant_file}\n{product_file}"
+    def __repr__(self) -> str:
+        ts = "-TS" if self.ts_search else ""
+        return f"NEBKeywords(images={self.n_images}{ts})"
 
 
 # ============================================================================
-# QM/QM2 ONIOM Keywords (Multiscale)
+# ONIOM Keywords (QM/QM2)
 # ============================================================================
 
 @dataclass
-class ONIOMKeywords:
+class ONIOMKeywords(ORCA6Keywords):
     """
     Keywords for ORCA QM/QM2 ONIOM multiscale calculations.
 
-    ONIOM enables hybrid calculations with different levels of theory:
-    - High-level (QM1): Accurate method for active region
-    - Low-level (QM2): Fast method for environment
+    Supports:
+    - QM/XTB: High-level DFT with XTB environment (most common)
+    - QM/DFT: Dual-level DFT (high accuracy)
+    - QM/MLIP: High-level DFT with ML potential environment (fastest)
 
-    Supported QM2 methods:
-        - XTB (GFN2-xTB, default)
-        - DFT methods (PBE, etc.)
-        - MLIP via ExtOpt (AIMNet2, UMA)
-        - Custom methods via QM2CUSTOMMETHOD
-
-    Examples:
-        # QM/XTB (standard)
+    Example:
+        >>> # QM/XTB (recommended for most cases)
         >>> oniom = ONIOMKeywords(
         ...     high_level="r2SCAN-3c",
         ...     low_level="XTB",
-        ...     qm_atoms=[0, 1, 2, 3, 4, 5],
+        ...     qm_atoms=[0, 1, 2, 3]
         ... )
-
-        # QM/DFT (DLPNO-CCSD(T)/DFT)
-        >>> oniom = ONIOMKeywords(
-        ...     high_level="DLPNO-CCSD(T) def2-TZVP",
-        ...     low_level="PBE D3BJ def2-SVP",
-        ...     qm_atoms=[0, 1, 2],
-        ... )
-
-        # QM/MLIP (via ExtOpt)
+        >>>
+        >>> # QM/MLIP (fastest for large systems)
         >>> oniom = ONIOMKeywords(
         ...     high_level="r2SCAN-3c",
+        ...     low_level="MLIP",
         ...     low_level_mlip=True,
         ...     mlip_model="aimnet2",
-        ...     qm_atoms=[0, 1, 2, 3],
+        ...     qm_atoms=[0, 1, 2, 3]
         ... )
     """
-
     high_level: str = "r2SCAN-3c"
-    low_level: str = "XTB"
+    low_level: str = "XTB"  # "XTB", "GFN2-xTB", or DFT method, or "MLIP"
+    low_level_mlip: bool = False
+    mlip_model: str = "aimnet2"
+    mlip_server_url: str = "http://gpg-boltzmann:5003"
     qm_atoms: List[int] = field(default_factory=list)
 
-    # QM2 customization
-    use_custom_qm2: bool = False
-    qm2_custom_method: Optional[str] = None
-
-    # MLIP as low-level method
-    low_level_mlip: bool = False
-    mlip_model: str = "aimnet2"  # aimnet2, uma
-    mlip_server_url: Optional[str] = None
-
-    # Charge scheme for electrostatic embedding
-    charge_method: str = "Hirshfeld"  # Hirshfeld, CHELPG, Mulliken, Loewdin
-
-    # Link atom options
-    link_atom_type: str = "H"
-
-    def __post_init__(self):
-        """Validate ONIOM settings."""
-        if self.low_level_mlip and self.low_level != "MLIP":
-            self.low_level = "MLIP"
-            self.use_custom_qm2 = True
-
     def to_orca_keyword(self) -> str:
-        """Generate main keyword line."""
-        if self.low_level.upper() == "XTB":
-            return f"QM/XTB {self.high_level}"
-        elif self.low_level_mlip or self.use_custom_qm2:
-            return f"QM/QM2 {self.high_level}"
+        if self.low_level_mlip:
+            # QM/MLIP uses ExtOpt interface
+            return f"!QM/QM2 {self.high_level}"
+        elif self.low_level.upper().startswith("XTB") or self.low_level.upper().startswith("GFN"):
+            return f"!QM/XTB {self.high_level}"
         else:
-            return f"QM/QM2 {self.high_level}"
+            return f"!QM/QM2 {self.high_level}"
 
-    def to_qmmm_block(self) -> str:
-        """Generate %qmmm block."""
+    def to_orca_block(self) -> str:
         lines = ["%qmmm"]
 
         # QM atoms
         if self.qm_atoms:
-            atoms_str = " ".join(str(a) for a in self.qm_atoms)
-            # Check for ranges
-            lines.append(f"  QMATOMS {{{atoms_str}}} end")
+            atom_list = " ".join(str(a) for a in self.qm_atoms)
+            lines.append(f"  QMATOMS {{{atom_list}}} end")
 
-        # Custom QM2 method
-        if self.use_custom_qm2 and self.qm2_custom_method:
-            lines.append(f'  QM2CUSTOMMETHOD "{self.qm2_custom_method}"')
-
-        # Charge method
-        if self.charge_method != "Hirshfeld":
-            lines.append(f"  Charge_Method {self.charge_method}")
+        # Low-level method
+        if self.low_level_mlip:
+            lines.append('  QM2CUSTOMMETHOD "ExtOpt"')
+        elif not (self.low_level.upper().startswith("XTB") or
+                  self.low_level.upper().startswith("GFN")):
+            lines.append(f'  QM2CUSTOMMETHOD "{self.low_level}"')
 
         lines.append("end")
+
+        # ExtOpt block for MLIP
+        if self.low_level_mlip:
+            lines.extend([
+                "",
+                "%extopt",
+                f'  CMD "mlip_client {self.mlip_server_url} {self.mlip_model}"',
+                "end",
+            ])
+
         return "\n".join(lines)
 
-    def to_extopt_block(self) -> str:
-        """Generate %extopt block for MLIP low-level method."""
-        if not self.low_level_mlip:
-            return ""
+    def __repr__(self) -> str:
+        ll = "MLIP" if self.low_level_mlip else self.low_level
+        return f"ONIOMKeywords(HL={self.high_level}, LL={ll})"
 
-        # Determine server URL
-        server_url = self.mlip_server_url
-        if not server_url:
-            server_url = get_default_mlip_server_url()
 
-        # Model mapping
-        model_map = {
-            "aimnet2": "aimnet+base",
-            "uma": "omol+uma_sm",
-            "aimnet+base": "aimnet+base",
-            "aimnet+pd": "aimnet+pd",
-            "omol+uma_sm": "omol+uma_sm",
-        }
-        model = model_map.get(self.mlip_model, self.mlip_model)
-
-        lines = ["%extopt"]
-        lines.append(f'  CMD "oet_client {server_url} {model}"')
-        lines.append("end")
-        return "\n".join(lines)
-
-    def to_orca_input(self) -> str:
-        """Generate complete ORCA input sections."""
-        parts = [f"!{self.to_orca_keyword()}"]
-
-        if self.low_level_mlip:
-            parts[0] = f"!ExtOpt {self.high_level}"
-
-        parts.append(self.to_qmmm_block())
-
-        if self.low_level_mlip:
-            parts.append(self.to_extopt_block())
-
-        return "\n".join(parts)
-
+# ============================================================================
+# Multiscale NEB-TS (ONIOM + NEB)
+# ============================================================================
 
 @dataclass
-class MultiscaleNEBTSKeywords:
+class MultiscaleNEBTSKeywords(ORCA6Keywords):
     """
-    Keywords for Multiscale NEB-TS calculations (ONIOM + NEB-TS).
+    Keywords for multiscale NEB-TS combining ONIOM with NEB.
 
-    Combines NEB-TS transition state search with QM/XTB or QM/MLIP
-    for efficient optimization of large systems.
-
-    Reference: ORCA 6.0 Tutorial - Multiscale NEB-TS
-    https://www.faccts.de/docs/orca/6.0/tutorials/multi/oniom-nebts.html
+    This enables efficient TS finding in large systems by:
+    1. Running NEB with ONIOM (QM active site, XTB/MLIP environment)
+    2. Optimizing TS with the same multiscale treatment
+    3. Verifying with frequency calculation
 
     Example:
-        >>> ms_nebts = MultiscaleNEBTSKeywords(
+        >>> nebts = MultiscaleNEBTSKeywords(
         ...     high_level="r2SCAN-3c",
         ...     low_level="XTB",
-        ...     qm_atoms=[0, 1, 2, 3, 4, 5],
-        ...     n_images=12,
-        ...     product_file="product.xyz",
+        ...     qm_atoms=[0, 1, 2, 3],
+        ...     n_images=12
         ... )
     """
-
-    # ONIOM settings
     high_level: str = "r2SCAN-3c"
     low_level: str = "XTB"
-    qm_atoms: List[int] = field(default_factory=list)
-
-    # MLIP option for low-level
     use_mlip: bool = False
     mlip_model: str = "aimnet2"
-
-    # NEB settings
+    qm_atoms: List[int] = field(default_factory=list)
     n_images: int = 12
-    product_file: str = ""
-    preopt: bool = True
-    interpolation: str = "IDPP"
-
-    # Frequency calculation
-    numfreq: bool = True
+    numfreq: bool = True  # Verify TS with frequency calculation
 
     def to_orca_keyword(self) -> str:
-        """Generate main keyword line."""
-        if self.low_level.upper() == "XTB":
-            base = f"QM/XTB {self.high_level} NEB-TS"
+        if self.use_mlip:
+            return f"!NEB-TS QM/QM2 {self.high_level}"
+        elif self.low_level.upper().startswith("XTB"):
+            return f"!NEB-TS QM/XTB {self.high_level}"
         else:
-            base = f"QM/QM2 {self.high_level} NEB-TS"
+            return f"!NEB-TS QM/QM2 {self.high_level}"
 
-        if self.numfreq:
-            base += " NUMFREQ"
+    def to_orca_block(self) -> str:
+        lines = []
 
-        return base
+        # NEB block
+        lines.extend([
+            "%neb",
+            f"  NImages {self.n_images}",
+            "  CI True",
+            "end",
+        ])
 
-    def to_qmmm_block(self) -> str:
-        """Generate %qmmm block."""
-        lines = ["%qmmm"]
+        # QMMM block
+        lines.append("")
+        lines.append("%qmmm")
         if self.qm_atoms:
-            atoms_str = " ".join(str(a) for a in self.qm_atoms)
-            lines.append(f"  QMATOMS {{{atoms_str}}} end")
+            atom_list = " ".join(str(a) for a in self.qm_atoms)
+            lines.append(f"  QMATOMS {{{atom_list}}} end")
+        if self.use_mlip:
+            lines.append('  QM2CUSTOMMETHOD "ExtOpt"')
+        elif not self.low_level.upper().startswith("XTB"):
+            lines.append(f'  QM2CUSTOMMETHOD "{self.low_level}"')
         lines.append("end")
+
+        # ExtOpt block for MLIP
+        if self.use_mlip:
+            lines.extend([
+                "",
+                "%extopt",
+                f'  CMD "mlip_client http://gpg-boltzmann:5003 {self.mlip_model}"',
+                "end",
+            ])
+
+        # Frequency verification
+        if self.numfreq:
+            lines.extend([
+                "",
+                "%geom",
+                "  CalcTS true",
+                "  NumFreq true",
+                "end",
+            ])
+
         return "\n".join(lines)
 
-    def to_neb_block(self) -> str:
-        """Generate %neb block."""
-        lines = ["%neb"]
-        lines.append(f'  PreOpt {"true" if self.preopt else "false"}')
-        lines.append(f'  Product "{self.product_file}"')
-        lines.append(f"  NImages {self.n_images}")
-        lines.append(f"  Interpolation {self.interpolation}")
-        lines.append("end")
-        return "\n".join(lines)
-
-    def to_orca_input(self) -> str:
-        """Generate complete ORCA input sections."""
-        parts = [f"!{self.to_orca_keyword()}"]
-        parts.append(self.to_qmmm_block())
-        parts.append(self.to_neb_block())
-        return "\n".join(parts)
+    def __repr__(self) -> str:
+        ll = "MLIP" if self.use_mlip else self.low_level
+        return f"MultiscaleNEBTSKeywords(HL={self.high_level}, LL={ll})"
 
 
 # ============================================================================
@@ -782,240 +565,158 @@ class MultiscaleNEBTSKeywords:
 # ============================================================================
 
 @dataclass
-class MLIPConfig:
+class MLIPConfig(ORCA6Keywords):
     """
-    Configuration for MLIP server connection.
+    Configuration for Machine Learning Interatomic Potentials.
 
-    Supported models:
-        - aimnet2 (aimnet+base): Organic molecules, most common
-        - uma (omol+uma_sm): Universal, includes transition metals
-        - aimnet+pd: AIMNet2 with periodic disturbance
-        - aimnet+spin: AIMNet2 with spin support
-
-    Example:
-        >>> config = MLIPConfig(model="aimnet2")
-        >>> if config.is_server_available():
-        ...     models = config.get_available_models()
+    Available models:
+    - aimnet2: General organic molecules (default)
+    - uma: Universal model with transition metal support
     """
-
-    server_url: Optional[str] = None
     model: str = "aimnet2"
-    client_script: Optional[str] = None
-    timeout: int = 30
-    fallback_enabled: bool = True
+    server_url: str = "http://gpg-boltzmann:5003"
 
-    def __post_init__(self):
-        """Set default server URL based on platform."""
-        if self.server_url is None:
-            self.server_url = get_default_mlip_server_url()
+    def to_orca_keyword(self) -> str:
+        return ""  # MLIP is configured via ExtOpt block
 
-    def is_server_available(self) -> bool:
-        """Check if MLIP server is reachable."""
-        import urllib.request
-        import urllib.error
+    def to_orca_block(self) -> str:
+        return ""
 
-        try:
-            url = f"{self.server_url}/models"
-            req = urllib.request.Request(url, method="GET")
-            with urllib.request.urlopen(req, timeout=5) as response:
-                return response.status == 200
-        except (urllib.error.URLError, TimeoutError):
-            return False
-
-    def get_available_models(self) -> List[str]:
-        """Get list of available models from server."""
-        import urllib.request
-        import json
-
-        try:
-            url = f"{self.server_url}/models"
-            with urllib.request.urlopen(url, timeout=5) as response:
-                data = json.loads(response.read().decode())
-                return data.get("models", [])
-        except Exception:
-            return []
-
-
-def get_default_mlip_server_url() -> str:
-    """Get default MLIP server URL based on platform."""
-    # Check environment variable first
-    env_url = os.environ.get("MLIP_SERVER_URL")
-    if env_url:
-        return env_url
-
-    # GPG cluster default
-    return "http://gpg-boltzmann:5003"
-
-
-def get_platform_info() -> Dict[str, Any]:
-    """Get platform information for MLIP configuration."""
-    machine = platform.machine()
-    system = platform.system()
-
-    return {
-        "machine": machine,
-        "system": system,
-        "is_arm64": machine in ("aarch64", "arm64"),
-        "is_apple_silicon": system == "Darwin" and machine == "arm64",
-        "is_x86_64": machine in ("x86_64", "AMD64"),
-    }
+    def __repr__(self) -> str:
+        return f"MLIPConfig(model={self.model})"
 
 
 # ============================================================================
-# ExtOpt Keywords for MLIP
+# ExtOpt Keywords (External Optimizer for MLIP)
 # ============================================================================
 
 @dataclass
-class ExtOptKeywords(OptKeywords):
+class ExtOptKeywords(ORCA6Keywords):
     """
-    Keywords for ORCA ExtOpt external optimizer (MLIP acceleration).
+    Keywords for ORCA ExtOpt (external optimizer interface).
 
-    Uses machine learning potentials (AIMNet2, UMA) for fast optimization
-    before DFT refinement.
+    Used to integrate MLIPs and other external methods with ORCA.
 
     Example:
         >>> extopt = ExtOptKeywords(
-        ...     mlip_model="aimnet2",
-        ...     run_type="Opt",
+        ...     command="mlip_client http://localhost:5003 aimnet2"
         ... )
-        >>> print(extopt.to_orca_input())
-        !ExtOpt Opt
-        %extopt
-          CMD "oet_client http://gpg-boltzmann:5003 aimnet+base"
-        end
     """
-
-    mlip_model: str = "aimnet2"
-    server_url: Optional[str] = None
-    run_type: str = "Opt"  # Opt, GOAT, NEB-TS
-
-    additional_keywords: List[str] = field(default_factory=list)
-
-    def __post_init__(self):
-        """Set up ExtOpt configuration."""
-        if self.server_url is None:
-            self.server_url = get_default_mlip_server_url()
+    command: str = ""
 
     def to_orca_keyword(self) -> str:
-        """Generate main keyword line."""
-        parts = ["ExtOpt", self.run_type]
-        parts.extend(self.additional_keywords)
-        return " ".join(parts)
+        return "!ExtOpt Opt"
 
-    def to_extopt_block(self) -> str:
-        """Generate %extopt block."""
-        model_map = {
-            "aimnet2": "aimnet+base",
-            "uma": "omol+uma_sm",
-        }
-        model = model_map.get(self.mlip_model, self.mlip_model)
-
-        lines = ["%extopt"]
-        lines.append(f'  CMD "oet_client {self.server_url} {model}"')
-        lines.append("end")
+    def to_orca_block(self) -> str:
+        if not self.command:
+            return ""
+        lines = [
+            "%extopt",
+            f'  CMD "{self.command}"',
+            "end",
+        ]
         return "\n".join(lines)
 
-    def to_orca_input(self) -> str:
-        """Generate complete ORCA input."""
-        return f"!{self.to_orca_keyword()}\n{self.to_extopt_block()}"
+    def __repr__(self) -> str:
+        return f"ExtOptKeywords(cmd={self.command[:30]}...)"
 
 
 # ============================================================================
-# Hybrid MLIP-DFT NEB Keywords
+# MLIP-accelerated NEB Keywords
 # ============================================================================
 
 @dataclass
-class MLIPNEBKeywords:
+class MLIPNEBKeywords(ORCA6Keywords):
     """
     Keywords for MLIP-accelerated NEB calculations.
 
-    Uses MLIP for initial path optimization, then refines with DFT.
-    This provides 10-100x speedup for transition state searches.
+    Uses MLIP for fast initial path optimization, then refines with DFT.
 
     Example:
         >>> mlip_neb = MLIPNEBKeywords(
         ...     mlip_model="aimnet2",
         ...     dft_method="r2SCAN-3c",
-        ...     n_images=15,
-        ...     product_file="product.xyz",
+        ...     n_images=15
         ... )
     """
-
     mlip_model: str = "aimnet2"
     dft_method: str = "r2SCAN-3c"
     n_images: int = 15
-    product_file: str = ""
-    server_url: Optional[str] = None
+    server_url: str = "http://gpg-boltzmann:5003"
 
-    # MLIP-specific options
-    preopt_mlip: bool = True
-    refine_ts_with_dft: bool = True
+    def to_orca_keyword(self) -> str:
+        # MLIP NEB is a two-stage process
+        return f"!NEB-TS {self.dft_method}"
 
-    def to_mlip_neb_input(self) -> str:
-        """Generate MLIP NEB input for first stage."""
-        if self.server_url is None:
-            self.server_url = get_default_mlip_server_url()
-
-        model_map = {"aimnet2": "aimnet+base", "uma": "omol+uma_sm"}
-        model = model_map.get(self.mlip_model, self.mlip_model)
-
-        lines = ["!ExtOpt NEB-TS"]
-        lines.append("%extopt")
-        lines.append(f'  CMD "oet_client {self.server_url} {model}"')
-        lines.append("end")
-        lines.append("%neb")
-        lines.append(f'  Product "{self.product_file}"')
-        lines.append(f"  NImages {self.n_images}")
-        lines.append("  PreOpt true")
-        lines.append("end")
+    def to_orca_block(self) -> str:
+        lines = [
+            "%neb",
+            f"  NImages {self.n_images}",
+            "  CI True",
+            "end",
+        ]
         return "\n".join(lines)
 
-    def to_dft_refinement_input(self) -> str:
-        """Generate DFT refinement input for TS."""
-        lines = [f"!{self.dft_method} OptTS TightSCF"]
-        return "\n".join(lines)
+    def __repr__(self) -> str:
+        return f"MLIPNEBKeywords(mlip={self.mlip_model}, dft={self.dft_method})"
 
 
 # ============================================================================
-# Pre-defined Keyword Sets
+# Preset keyword configurations
 # ============================================================================
 
-# r2SCAN-3c composite method (ORCA 6.x default)
-r2scan3c = Keyword(orca="r2SCAN-3c", name="r2SCAN-3c")
-
-# D4 dispersion (ORCA 6.x default)
-d4 = Keyword(orca="D4", name="D4")
-
-# wB97M-V functional (recommended for MLIP training)
-wb97mv = Keyword(orca="wB97M-V def2-TZVPPD", name="wB97M-V")
-
-# wB97X-D4 functional
-wb97xd4 = Keyword(orca="wB97X-D4", name="wB97X-D4")
+def r2scan3c_keywords() -> str:
+    """Return r2SCAN-3c composite method keywords."""
+    return "!r2SCAN-3c TightSCF DefGrid2"
 
 
-def get_orca_version_keywords(version: str = "6") -> Dict[str, Keywords]:
+def wb97xd4_keywords() -> str:
+    """Return wB97X-D4 dispersion-corrected hybrid functional keywords."""
+    return "!wB97X-D4 def2-TZVP TightSCF DefGrid2 RIJCOSX def2/J"
+
+
+# ============================================================================
+# Convenience functions
+# ============================================================================
+
+def get_orca_version() -> Optional[str]:
     """
-    Get recommended keyword sets for ORCA version.
-
-    Args:
-        version: "5" or "6"
+    Get ORCA version from environment.
 
     Returns:
-        Dictionary with 'opt', 'sp', 'ts', 'hess' keyword sets
+        Version string (e.g., "6.1.1") or None if ORCA not found
     """
-    if version.startswith("6"):
-        # ORCA 6.x defaults (D4 dispersion)
-        return {
-            "opt": OptKeywords([r2scan3c]),
-            "sp": Keywords([r2scan3c]),
-            "ts": OptKeywords([r2scan3c, Keyword(orca="OptTS")]),
-            "hess": Keywords([r2scan3c, Keyword(orca="Freq")]),
-        }
-    else:
-        # ORCA 5.x defaults (D3BJ dispersion)
-        return {
-            "opt": OptKeywords([pbe0, def2svp, d3bj, Keyword(orca="Opt")]),
-            "sp": Keywords([pbe0, def2svp, d3bj]),
-            "ts": OptKeywords([pbe0, def2svp, d3bj, Keyword(orca="OptTS")]),
-            "hess": Keywords([pbe0, def2svp, d3bj, Keyword(orca="Freq")]),
-        }
+    orca_dir = os.environ.get("ORCA_DIR", "")
+    if not orca_dir:
+        return None
+
+    try:
+        import subprocess
+        result = subprocess.run(
+            [os.path.join(orca_dir, "orca"), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        # Parse version from output
+        for line in result.stdout.split("\n"):
+            if "Program Version" in line:
+                parts = line.split()
+                for p in parts:
+                    if p[0].isdigit():
+                        return p
+        return None
+    except Exception:
+        return None
+
+
+def is_orca_v6() -> bool:
+    """Check if ORCA 6.x is available."""
+    version = get_orca_version()
+    if version is None:
+        return False
+    try:
+        major = int(version.split(".")[0])
+        return major >= 6
+    except (ValueError, IndexError):
+        return False
