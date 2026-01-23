@@ -33,6 +33,23 @@ from autode.wrappers.keywords.implicit_solvent_types import (
 from autode.wrappers.keywords.ri import rijcosx
 from autode.wrappers.keywords.wf import hf
 
+# ORCA 6.x keyword classes
+from autode.wrappers.keywords.orca6 import (
+    GOATKeywords,
+    TSConformerKeywords,
+    SolvatorKeywords,
+    DockerKeywords,
+    IRCKeywords,
+    NEBKeywords,
+    ONIOMKeywords,
+    MultiscaleNEBTSKeywords,
+    MLIPConfig,
+    ExtOptKeywords,
+    MLIPNEBKeywords,
+    r2scan3c_keywords,
+    wb97xd4_keywords,
+)
+
 __all__ = [
     "def2svp",
     "def2tzvp",
@@ -63,4 +80,18 @@ __all__ = [
     "WFMethod",
     "ECP",
     "MaxOptCycles",
+    # ORCA 6.x classes
+    "GOATKeywords",
+    "TSConformerKeywords",
+    "SolvatorKeywords",
+    "DockerKeywords",
+    "IRCKeywords",
+    "NEBKeywords",
+    "ONIOMKeywords",
+    "MultiscaleNEBTSKeywords",
+    "MLIPConfig",
+    "ExtOptKeywords",
+    "MLIPNEBKeywords",
+    "r2scan3c_keywords",
+    "wb97xd4_keywords",
 ]
