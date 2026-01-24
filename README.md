@@ -94,6 +94,8 @@ print(orca.major_version)   # 6
    * [NWChem](http://www.nwchem-sw.org/index.php/Main_Page) >= 6.5
    * [QChem](https://www.q-chem.com/) >= 5.4
    * [GPU4PySCF](https://github.com/pyscf/gpu4pyscf)
+   * [TeraChem](https://www.petachem.com/products.html) >= 1.9 (GPU-accelerated, x86_64 only)
+   * [CP2K](https://www.cp2k.org/) >= 2024.1 (GPU-accelerated molecular DFT)
 * **Recommended Low-Level Method:**
    * [XTB](https://github.com/grimme-lab/xtb) >= 6.5 (**Recommended**)
 * Alternative Low-Level Methods:
@@ -102,6 +104,33 @@ print(orca.major_version)   # 6
 **Optional Dependencies:**
 * [orca-pi](https://pypi.org/project/orca-pi/) - ORCA Python Interface for enhanced parsing
 * [MLIP API Server](https://github.com/gomesgroup/mlip-api) - For MLIP-accelerated optimization
+
+### GPU-Accelerated Wrappers
+
+The gomesgroup fork includes wrappers for GPU-accelerated quantum chemistry codes:
+
+| Code | Architecture | GPU Required | Use Case |
+|------|--------------|--------------|----------|
+| **TeraChem** | x86_64 only | NVIDIA (CUDA) | Fast GPU DFT, CASSCF, excited states |
+| **CP2K** | x86_64 + ARM64 | NVIDIA (optional) | Molecular DFT with GPU acceleration |
+| **GPU4PySCF** | x86_64 + ARM64 | NVIDIA (CC 7.0+) | Python-native GPU DFT |
+
+**TeraChem Example:**
+```python
+import autode as ade
+mol = ade.Molecule(smiles='c1ccccc1')
+mol.optimise(method=ade.methods.TeraChem())
+```
+
+**CP2K Example (Molecular Systems):**
+```python
+import autode as ade
+mol = ade.Molecule(smiles='O')
+mol.single_point(method=ade.methods.CP2K())
+mol.optimise(method=ade.methods.CP2K())
+```
+
+**Note:** CP2K wrapper is configured for molecular (non-periodic) calculations using WAVELET Poisson solver.
 
 ## Installation
 

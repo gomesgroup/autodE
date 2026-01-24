@@ -13,7 +13,7 @@ General
 *******
 
 The high-level electronic structure code defaults to the first available
-from {ORCA, Gaussian09, Gaussian16, NWChem, QChem} and the low-level from
+from {ORCA, Gaussian09, Gaussian16, NWChem, QChem, TeraChem, CP2K} and the low-level from
 {XTB, MOPAC}. To select Gaussian09 as the high-level method:
 
 .. code-block:: python
@@ -171,6 +171,61 @@ set the keywords to use. For example
     'MaxIter 150\n'
     'end']
 
+
+------------
+
+TeraChem (GPU-accelerated)
+**************************
+
+TeraChem is a GPU-accelerated quantum chemistry package. The autodE wrapper
+supports single-point energies, gradients, and geometry optimization.
+
+.. code-block:: python
+
+  >>> import autode as ade
+  >>> ade.Config.hcode = 'terachem'
+  >>> mol = ade.Molecule(smiles='c1ccccc1')
+  >>> mol.optimise(method=ade.methods.TeraChem())
+
+To customize TeraChem keywords:
+
+.. code-block:: python
+
+  >>> kwds = ade.Config.TeraChem.keywords
+  >>> kwds.sp = ['basis 6-31g*', 'method b3lyp', 'run energy']
+  >>> kwds.opt = ['basis 6-31g*', 'method b3lyp', 'run minimize']
+
+.. note::
+    TeraChem is x86_64 only and requires NVIDIA GPUs with CUDA support.
+
+------------
+
+CP2K (Molecular Calculations)
+*****************************
+
+CP2K is a versatile quantum chemistry package. The autodE wrapper is configured
+for molecular (non-periodic) calculations using GPW method with WAVELET Poisson
+solver.
+
+.. code-block:: python
+
+  >>> import autode as ade
+  >>> ade.Config.hcode = 'cp2k'
+  >>> mol = ade.Molecule(smiles='O')
+  >>> mol.single_point(method=ade.methods.CP2K())
+  >>> mol.optimise(method=ade.methods.CP2K())
+
+To customize CP2K keywords:
+
+.. code-block:: python
+
+  >>> kwds = ade.Config.CP2K.keywords
+  >>> kwds.functional = 'PBE'
+  >>> kwds.basis = 'DZVP-MOLOPT-GTH'
+
+.. note::
+    The CP2K wrapper automatically uses cubic cells and WAVELET Poisson solver
+    for molecular calculations. For periodic systems, use CP2K directly.
 
 ------------
 
