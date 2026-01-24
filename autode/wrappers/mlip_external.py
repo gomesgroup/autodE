@@ -37,7 +37,9 @@ except ImportError:
 
 
 # Default MLIP server endpoints
+# The gateway at gpg-head:8080 load-balances across all backends
 DEFAULT_MLIP_SERVERS = {
+    "gpg-gateway": "http://gpg-head:8080",  # Preferred: load-balanced gateway
     "gpg-cluster": "http://gpg-boltzmann:5003",
     "localhost": "http://localhost:5003",
     "materials-id": "http://id-gpu01.materials.local.cmu.edu:8888",
@@ -85,7 +87,16 @@ def get_available_mlip_models(server_url: str) -> List[str]:
         req = urllib.request.Request(url, method="GET")
         with urllib.request.urlopen(req, timeout=5) as response:
             data = json.loads(response.read().decode())
-            return data.get("models", [])
+            # Handle both formats: {"models": [...]} or {model_name: {...}, ...}
+            if isinstance(data, dict):
+                if "models" in data:
+                    return data["models"]
+                else:
+                    # Gateway format: keys are model names
+                    return list(data.keys())
+            elif isinstance(data, list):
+                return data
+            return []
     except Exception:
         return []
 
@@ -171,9 +182,22 @@ def run_mlip_single_point(
         with urllib.request.urlopen(req, timeout=30) as response:
             result = json.loads(response.read().decode())
 
+        # Handle both 'forces' and 'gradient' response formats
+        # Gateway returns 'gradient' as flat array; forces = -gradient
+        forces = result.get("forces", None)
+        if forces is None and "gradient" in result:
+            gradient = result["gradient"]
+            # Convert flat gradient array to list of (fx, fy, fz) tuples
+            # and negate (force = -gradient)
+            n_atoms = len(atoms)
+            forces = [
+                (-gradient[i * 3], -gradient[i * 3 + 1], -gradient[i * 3 + 2])
+                for i in range(n_atoms)
+            ]
+
         return MLIPCalculation(
             energy=result.get("energy", 0.0),
-            forces=result.get("forces", None),
+            forces=forces,
             coordinates=coordinates,
         )
     except Exception as e:
@@ -442,9 +466,11 @@ def mlip_preoptimize(
         current_coords += step_size * forces
 
     # Create new molecule with optimized coordinates
+    from autode import Atom
     new_atoms = []
     for i, atom in enumerate(molecule.atoms):
-        new_atoms.append((atom.label, *current_coords[i]))
+        x, y, z = current_coords[i]
+        new_atoms.append(Atom(atom.label, x=float(x), y=float(y), z=float(z)))
 
     return Molecule(atoms=new_atoms, charge=molecule.charge, mult=molecule.mult)
 
