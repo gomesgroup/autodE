@@ -22,3 +22,9 @@ tests/*.xyz
 .autode_calculations
 tests/initial_path/*
 .mypy_cache
+
+# GPG cluster virtual environments
+env/
+env-arm64/
+micromamba/
+.serena/
