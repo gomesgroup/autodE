@@ -8,6 +8,8 @@ from autode.wrappers.QChem import QChem
 from autode.wrappers.MOPAC import MOPAC
 from autode.wrappers.XTB import XTB
 from autode.wrappers.GPU4PySCF import GPU4PySCF
+from autode.wrappers.TeraChem import TeraChem
+from autode.wrappers.CP2K import CP2K
 from autode.log import logger
 from autode.config import Config
 from autode.exceptions import MethodUnavailable
@@ -22,7 +24,7 @@ DFT/WF theory calculations, low level methods are, for example, xtb and mopac
 which are fast non ab-initio methods
 """
 
-high_level_method_names = ["orca", "g09", "g16", "nwchem", "qchem", "gpu4pyscf"]
+high_level_method_names = ["orca", "g09", "g16", "nwchem", "qchem", "gpu4pyscf", "terachem", "cp2k"]
 low_level_method_names = ["xtb", "mopac"]
 
 
@@ -72,7 +74,7 @@ def get_hmethod() -> "Method":
         (Method): High-level method
     """
 
-    h_methods = [ORCA(), G09(), NWChem(), G16(), QChem(), GPU4PySCF()]
+    h_methods = [ORCA(), G09(), NWChem(), G16(), QChem(), GPU4PySCF(), TeraChem(), CP2K()]
 
     if Config.hcode is not None:
         return get_defined_method(name=Config.hcode, possibilities=h_methods)

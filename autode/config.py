@@ -408,6 +408,54 @@ class _ConfigClass:
         )
         implicit_solvation_type = None
 
+    class TeraChem:
+        # ---------------------------------------------------------------------
+        # Parameters for TeraChem               https://www.petachem.com/
+        # ---------------------------------------------------------------------
+        # GPU-accelerated quantum chemistry package (x86_64 only)
+        #
+        # Path can be unset and will be assigned if it can be found in $PATH
+        path = None
+        #
+        # TeraChem uses B3LYP as default functional, 6-31G** as default basis
+        # Note: TeraChem uses "6-31gss" notation for 6-31G**
+        keywords = KeywordsSet(
+            low_opt=["b3lyp", "6-31gs", "Opt=Loose", MaxOptCycles(10)],
+            grad=["b3lyp", "6-31gs", "gradient"],
+            low_sp=["b3lyp", "6-31gs"],
+            opt=["b3lyp", "6-31gs", "opt"],
+            opt_ts=["b3lyp", "6-31gs", "ts", "freq"],
+            hess=["b3lyp", "6-31gs", "freq"],
+            sp=["b3lyp", "def2-tzvp"],
+        )
+        #
+        # TeraChem uses COSMO for implicit solvation
+        implicit_solvation_type = solv.cosmo
+
+    class CP2K:
+        # ---------------------------------------------------------------------
+        # Parameters for CP2K                   https://www.cp2k.org/
+        # ---------------------------------------------------------------------
+        # GPU-accelerated DFT package for molecular calculations
+        # This wrapper focuses on non-periodic (molecular) calculations
+        #
+        # Path can be unset and will be assigned if it can be found in $PATH
+        path = None
+        #
+        # CP2K uses PBE as default functional, DZVP-MOLOPT-GTH as default basis
+        keywords = KeywordsSet(
+            low_opt=["pbe", "dzvp-molopt-gth", "Opt=Loose", MaxOptCycles(10)],
+            grad=["pbe", "dzvp-molopt-gth", "gradient"],
+            low_sp=["pbe", "dzvp-molopt-gth"],
+            opt=["pbe", "dzvp-molopt-gth", "opt"],
+            opt_ts=["pbe", "dzvp-molopt-gth", "ts"],
+            hess=["pbe", "dzvp-molopt-gth", "freq"],
+            sp=["pbe", "tzvp-molopt-gth"],
+        )
+        #
+        # Implicit solvation not implemented in this wrapper
+        implicit_solvation_type = None
+
     # =========================================================================
     # =============               End                        ==================
     # =========================================================================
