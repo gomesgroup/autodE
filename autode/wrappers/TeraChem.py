@@ -360,7 +360,7 @@ class TeraChem(autode.wrappers.methods.ExternalMethodOEGH):
         self, calc: "CalculationExecutor"
     ) -> "BaseOptimiser":
         """Return the external optimiser for TeraChem"""
-        return TeraChemOptimiser(calc=calc, callback=None)
+        return TeraChemOptimiser(output_lines=calc.output.file_lines)
 
     def terminated_normally_in(self, calc: "CalculationExecutor") -> bool:
         """Check if TeraChem terminated normally"""
@@ -404,17 +404,16 @@ class TeraChem(autode.wrappers.methods.ExternalMethodOEGH):
 class TeraChemOptimiser(ExternalOptimiser):
     """External optimiser using TeraChem's built-in geometry optimization"""
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._last_energy = None
+    def __init__(self, output_lines: List[str]):
+        self._lines = output_lines
 
     @property
     def converged(self) -> bool:
         """Check if optimization has converged"""
-        if self._calc.output.file_lines is None:
+        if self._lines is None:
             return False
 
-        for line in reversed(self._calc.output.file_lines):
+        for line in reversed(self._lines):
             if "Optimization converged" in line:
                 return True
             if "converged successfully" in line.lower():
@@ -426,4 +425,21 @@ class TeraChemOptimiser(ExternalOptimiser):
     def last_energy_change(self):
         """Return the last energy change"""
         from autode.values import PotentialEnergy
-        return PotentialEnergy(0.0)  # TeraChem handles convergence internally
+
+        # Parse energies from TeraChem output
+        energies = []
+        for line in self._lines:
+            if "FINAL ENERGY:" in line:
+                try:
+                    parts = line.split()
+                    for i, part in enumerate(parts):
+                        if part == "ENERGY:":
+                            energy = float(parts[i + 1])
+                            energies.append(energy)
+                            break
+                except (ValueError, IndexError):
+                    continue
+
+        if len(energies) >= 2:
+            return PotentialEnergy(energies[-1] - energies[-2], units="Ha")
+        return PotentialEnergy(0.0, units="Ha")

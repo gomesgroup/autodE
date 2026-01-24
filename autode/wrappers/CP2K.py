@@ -82,11 +82,14 @@ class CP2K(autode.wrappers.methods.ExternalMethodOEGH):
         functional = self._get_functional(calc)
         basis = self._get_basis(calc)
 
-        # Estimate box size (molecule extent + 10 Angstrom padding)
+        # Estimate box size (molecule extent + 15 Angstrom padding)
+        # WAVELET Poisson solver requires a cubic cell
         coords = calc.molecule.coordinates
         min_coords = np.min(coords, axis=0)
         max_coords = np.max(coords, axis=0)
-        box_size = max_coords - min_coords + 15.0  # 15 Angstrom padding
+        extent = max_coords - min_coords
+        max_extent = max(extent) + 15.0  # 15 Angstrom padding
+        box_size = np.array([max_extent, max_extent, max_extent])  # Cubic cell
 
         with open(calc.input.filename, "w") as inp_file:
             self._write_global_section(inp_file, run_type, calc.name)
@@ -170,13 +173,6 @@ class CP2K(autode.wrappers.methods.ExternalMethodOEGH):
         inp_file.write("\n    &QS\n")
         inp_file.write("      EPS_DEFAULT 1.0E-12\n")
         inp_file.write("    &END QS\n")
-
-        # Print forces for gradient calculations
-        if self._get_run_type(calc) in ["ENERGY_FORCE", "GEO_OPT", "TRANSITION_STATE"]:
-            inp_file.write("\n    &PRINT\n")
-            inp_file.write("      &FORCES ON\n")
-            inp_file.write("      &END FORCES\n")
-            inp_file.write("    &END PRINT\n")
 
         inp_file.write("  &END DFT\n\n")
 
@@ -453,7 +449,7 @@ class CP2K(autode.wrappers.methods.ExternalMethodOEGH):
         self, calc: "CalculationExecutor"
     ) -> "BaseOptimiser":
         """Return the external optimiser for CP2K"""
-        return CP2KOptimiser(calc=calc, callback=None)
+        return CP2KOptimiser(output_lines=calc.output.file_lines)
 
     def terminated_normally_in(self, calc: "CalculationExecutor") -> bool:
         """Check if CP2K terminated normally"""
@@ -520,22 +516,18 @@ class CP2K(autode.wrappers.methods.ExternalMethodOEGH):
 class CP2KOptimiser(ExternalOptimiser):
     """External optimiser using CP2K's built-in geometry optimization"""
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._last_energy = None
+    def __init__(self, output_lines: List[str]):
+        self._lines = output_lines
 
     @property
     def converged(self) -> bool:
         """Check if optimization has converged"""
-        if self._calc.output.file_lines is None:
+        if self._lines is None:
             return False
 
-        for line in reversed(self._calc.output.file_lines):
+        for line in reversed(self._lines):
             if "GEOMETRY OPTIMIZATION COMPLETED" in line:
                 return True
-            if "SCF run converged" in line.lower():
-                # Single point completed but not optimization
-                continue
 
         return False
 
@@ -543,4 +535,21 @@ class CP2KOptimiser(ExternalOptimiser):
     def last_energy_change(self):
         """Return the last energy change"""
         from autode.values import PotentialEnergy
-        return PotentialEnergy(0.0)  # CP2K handles convergence internally
+
+        # Parse energies from output to get last change
+        energies = []
+        for line in self._lines:
+            if "ENERGY| Total FORCE_EVAL" in line:
+                try:
+                    parts = line.split()
+                    for i, part in enumerate(parts):
+                        if part == "FORCE_EVAL":
+                            energy = float(parts[i + 4])  # Energy value after units
+                            energies.append(energy)
+                            break
+                except (ValueError, IndexError):
+                    continue
+
+        if len(energies) >= 2:
+            return PotentialEnergy(energies[-1] - energies[-2], units="Ha")
+        return PotentialEnergy(0.0, units="Ha")
