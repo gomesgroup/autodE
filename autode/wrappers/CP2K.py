@@ -7,6 +7,11 @@ for geometry optimization and single-point energies.
 
 Note: This wrapper uses PERIODIC NONE mode with WAVELET Poisson solver for
 isolated molecular calculations, not periodic solid-state calculations.
+
+Updated for CP2K 2026.1:
+- Extended XYZ format support for trajectory parsing
+- AUG_MOLOPT basis sets (AUG-DZVP-MOLOPT-GTH, AUG-TZVP-MOLOPT-GTH)
+- SF-TDDFT (spin-flip TDDFT) for excited states and diradicals
 """
 import os
 import numpy as np
@@ -118,7 +123,11 @@ class CP2K(autode.wrappers.methods.ExternalMethodOEGH):
 
         # DFT section
         inp_file.write("  &DFT\n")
-        inp_file.write("    BASIS_SET_FILE_NAME BASIS_MOLOPT\n")
+        # Use AUG_MOLOPT basis file for augmented basis sets (CP2K 2026.1+)
+        if "aug" in basis.lower():
+            inp_file.write("    BASIS_SET_FILE_NAME AUG_MOLOPT\n")
+        else:
+            inp_file.write("    BASIS_SET_FILE_NAME BASIS_MOLOPT\n")
         inp_file.write("    POTENTIAL_FILE_NAME GTH_POTENTIALS\n")
 
         # Charge and multiplicity
@@ -174,12 +183,59 @@ class CP2K(autode.wrappers.methods.ExternalMethodOEGH):
         inp_file.write("      EPS_DEFAULT 1.0E-12\n")
         inp_file.write("    &END QS\n")
 
+        # TDDFT section for excited states (CP2K 2026.1+ for SF-TDDFT)
+        if self._has_sftddft(calc):
+            self._write_sftddft_section(inp_file, calc)
+        elif self._has_tddft(calc):
+            self._write_tddft_section(inp_file, calc)
+
         inp_file.write("  &END DFT\n\n")
 
         # SUBSYS section
         self._write_subsys_section(inp_file, calc, basis, box_size)
 
         inp_file.write("&END FORCE_EVAL\n")
+
+    def _write_tddft_section(self, inp_file, calc):
+        """Write the &TDDFPT section for linear-response TDDFT excited states
+
+        Uses Tamm-Dancoff approximation (TDA) for efficiency.
+        """
+        nstates = self._get_nstates(calc)
+
+        inp_file.write("\n    &TDDFPT\n")
+        inp_file.write(f"      NSTATES {nstates}\n")
+        inp_file.write("      MAX_ITER 100\n")
+        inp_file.write("      CONVERGENCE 1.0E-6\n")
+        inp_file.write("      &MGRID\n")
+        inp_file.write("        CUTOFF 300\n")
+        inp_file.write("      &END MGRID\n")
+        inp_file.write("    &END TDDFPT\n")
+
+    def _write_sftddft_section(self, inp_file, calc):
+        """Write the &TDDFPT section for Spin-Flip TDDFT (CP2K 2026.1+)
+
+        SF-TDDFT is useful for:
+        - Diradical character (e.g., singlet-triplet gaps)
+        - Bond-breaking processes
+        - Conical intersections
+        - Systems with strong static correlation
+
+        Requires a high-spin reference (e.g., triplet) to access low-spin
+        target states via spin-flip excitations.
+        """
+        nstates = self._get_nstates(calc)
+
+        inp_file.write("\n    &TDDFPT\n")
+        inp_file.write(f"      NSTATES {nstates}\n")
+        inp_file.write("      MAX_ITER 100\n")
+        inp_file.write("      CONVERGENCE 1.0E-6\n")
+        inp_file.write("      ! SF-TDDFT: Spin-flip excitations (CP2K 2026.1+)\n")
+        inp_file.write("      SPIN_FLIP_TDDFT TRUE\n")
+        inp_file.write("      &MGRID\n")
+        inp_file.write("        CUTOFF 300\n")
+        inp_file.write("      &END MGRID\n")
+        inp_file.write("    &END TDDFPT\n")
 
     def _write_subsys_section(self, inp_file, calc, basis: str, box_size):
         """Write the &SUBSYS section with coordinates and basis sets"""
@@ -231,9 +287,21 @@ class CP2K(autode.wrappers.methods.ExternalMethodOEGH):
             inp_file.write("    &END TRANSITION_STATE\n")
             inp_file.write("  &END GEO_OPT\n")
         else:
+            # Check if CG optimizer is requested
+            use_cg = self._has_cg_optimizer(calc)
+
             inp_file.write("  &GEO_OPT\n")
             inp_file.write("    TYPE MINIMIZATION\n")
-            inp_file.write("    OPTIMIZER BFGS\n")
+            if use_cg:
+                # CG optimizer with 3PNT linesearch (fixed in CP2K 2026.1)
+                inp_file.write("    OPTIMIZER CG\n")
+                inp_file.write("    &CG\n")
+                inp_file.write("      &LINE_SEARCH\n")
+                inp_file.write("        TYPE 3PNT  ! Fixed in CP2K 2026.1\n")
+                inp_file.write("      &END LINE_SEARCH\n")
+                inp_file.write("    &END CG\n")
+            else:
+                inp_file.write("    OPTIMIZER BFGS\n")
             inp_file.write("    MAX_ITER 200\n")
             inp_file.write("    MAX_DR 0.0003\n")
             inp_file.write("    MAX_FORCE 0.00045\n")
@@ -241,11 +309,20 @@ class CP2K(autode.wrappers.methods.ExternalMethodOEGH):
             inp_file.write("    RMS_FORCE 0.0003\n")
             inp_file.write("  &END GEO_OPT\n")
 
-        # Print optimized structure
+        # Print optimized structure using Extended XYZ format (CP2K 2026.1+)
+        # Extended XYZ includes energy, forces, and other properties in the comment line
         inp_file.write("\n  &PRINT\n")
         inp_file.write("    &TRAJECTORY\n")
-        inp_file.write("      FORMAT XYZ\n")
+        inp_file.write("      FORMAT XMOL  ! Extended XYZ format (CP2K 2026.1+)\n")
+        inp_file.write("      &EACH\n")
+        inp_file.write("        GEO_OPT 1\n")
+        inp_file.write("      &END EACH\n")
         inp_file.write("    &END TRAJECTORY\n")
+        inp_file.write("    &FORCES\n")
+        inp_file.write("      &EACH\n")
+        inp_file.write("        GEO_OPT 1\n")
+        inp_file.write("      &END EACH\n")
+        inp_file.write("    &END FORCES\n")
         inp_file.write("    &RESTART OFF\n")
         inp_file.write("    &END RESTART\n")
         inp_file.write("  &END PRINT\n")
@@ -278,6 +355,17 @@ class CP2K(autode.wrappers.methods.ExternalMethodOEGH):
                 return True
         return False
 
+    def _has_cg_optimizer(self, calc: "CalculationExecutor") -> bool:
+        """Check if CG (Conjugate Gradient) optimizer is requested
+
+        CG with 3PNT linesearch was fixed in CP2K 2026.1.
+        """
+        for kw in calc.input.keywords:
+            kw_str = str(kw).lower()
+            if "cg" == kw_str or "conjugate" in kw_str:
+                return True
+        return False
+
     def _get_run_type(self, calc: "CalculationExecutor") -> str:
         """Determine CP2K run type from keywords"""
         for kw in calc.input.keywords:
@@ -290,17 +378,67 @@ class CP2K(autode.wrappers.methods.ExternalMethodOEGH):
                 return "ENERGY_FORCE"
             if "freq" in kw_str or "hess" in kw_str:
                 return "VIBRATIONAL_ANALYSIS"
+            # SF-TDDFT (spin-flip TDDFT) - CP2K 2026.1+
+            if "sf-tddft" in kw_str or "sftddft" in kw_str or "spinflip" in kw_str:
+                return "ENERGY"  # SF-TDDFT is a post-SCF method, run type is ENERGY
+            # Standard TDDFT
+            if "tddft" in kw_str or "tddfpt" in kw_str:
+                return "ENERGY"  # TDDFT is a post-SCF method
         return "ENERGY"
 
+    def _has_sftddft(self, calc: "CalculationExecutor") -> bool:
+        """Check if SF-TDDFT (spin-flip TDDFT) is requested (CP2K 2026.1+)"""
+        for kw in calc.input.keywords:
+            kw_str = str(kw).lower()
+            if "sf-tddft" in kw_str or "sftddft" in kw_str or "spinflip" in kw_str:
+                return True
+        return False
+
+    def _has_tddft(self, calc: "CalculationExecutor") -> bool:
+        """Check if TDDFT/TDDFPT is requested"""
+        for kw in calc.input.keywords:
+            kw_str = str(kw).lower()
+            if "tddft" in kw_str or "tddfpt" in kw_str:
+                return True
+        return False
+
+    def _get_nstates(self, calc: "CalculationExecutor") -> int:
+        """Get number of excited states from keywords (default: 5)"""
+        for kw in calc.input.keywords:
+            kw_str = str(kw).lower()
+            # Parse nstates=N or nroots=N
+            if "nstates=" in kw_str or "nroots=" in kw_str:
+                try:
+                    return int(kw_str.split("=")[1])
+                except (ValueError, IndexError):
+                    pass
+        return 5  # Default number of states
+
     def _cp2k_basis(self, basis: str, element: str) -> str:
-        """Map autodE basis name to CP2K basis set name"""
+        """Map autodE basis name to CP2K basis set name
+
+        Supports standard MOLOPT and augmented AUG_MOLOPT basis sets (CP2K 2026.1+).
+        AUG_MOLOPT adds diffuse functions for better description of anions,
+        excited states, and weak interactions.
+        """
         basis_lower = basis.lower()
-        if "dzvp" in basis_lower:
-            return "DZVP-MOLOPT-GTH"
+
+        # Check for augmented basis sets first (CP2K 2026.1+)
+        if "aug" in basis_lower:
+            if "tzvp" in basis_lower:
+                return "AUG-TZVP-MOLOPT-GTH"
+            elif "dzvp" in basis_lower:
+                return "AUG-DZVP-MOLOPT-GTH"
+            else:
+                return "AUG-DZVP-MOLOPT-GTH"  # Default augmented
+
+        # Standard MOLOPT basis sets
+        if "tzv2p" in basis_lower:
+            return "TZV2P-MOLOPT-GTH"
         elif "tzvp" in basis_lower:
             return "TZVP-MOLOPT-GTH"
-        elif "tzv2p" in basis_lower:
-            return "TZV2P-MOLOPT-GTH"
+        elif "dzvp" in basis_lower:
+            return "DZVP-MOLOPT-GTH"
         else:
             return "DZVP-MOLOPT-GTH"
 
@@ -346,33 +484,21 @@ class CP2K(autode.wrappers.methods.ExternalMethodOEGH):
         raise CouldNotGetProperty(name="energy")
 
     def coordinates_from(self, calc: "CalculationExecutor") -> Coordinates:
-        """Parse coordinates from CP2K output"""
+        """Parse coordinates from CP2K output
+
+        Supports both standard XYZ and extended XYZ format (CP2K 2026.1+).
+        Extended XYZ has properties in the comment line:
+        - Standard: "3\\n comment\\n H 0 0 0\\n ..."
+        - Extended: "3\\n Properties=species:S:1:pos:R:3 energy=-76.123\\n H 0 0 0\\n ..."
+        """
         assert calc.output.filename is not None
 
         # Try to find trajectory file first
         traj_file = calc.input.filename.replace(".inp", "-pos-1.xyz")
         if os.path.exists(traj_file):
-            try:
-                from autode.input_output import xyz_file_to_atoms
-
-                # Read last frame from trajectory
-                with open(traj_file, "r") as f:
-                    content = f.read()
-
-                # Split into frames and get last one
-                frames = content.strip().split("\n\n")
-                if frames:
-                    last_frame = frames[-1]
-                    # Write to temp file and read
-                    import tempfile
-                    with tempfile.NamedTemporaryFile(mode="w", suffix=".xyz", delete=False) as tmp:
-                        tmp.write(last_frame)
-                        tmp_path = tmp.name
-                    atoms = xyz_file_to_atoms(tmp_path)
-                    os.unlink(tmp_path)
-                    return atoms.coordinates
-            except Exception:
-                pass
+            coords = self._parse_xyz_trajectory(traj_file)
+            if coords is not None:
+                return coords
 
         # Parse from output file
         coords = []
@@ -404,6 +530,78 @@ class CP2K(autode.wrappers.methods.ExternalMethodOEGH):
             return Coordinates(coords, units="Å")
 
         raise AtomsNotFound("Could not find coordinates in CP2K output")
+
+    def _parse_xyz_trajectory(self, traj_file: str) -> Optional[Coordinates]:
+        """Parse the last frame from XYZ trajectory file
+
+        Supports both standard XYZ and extended XYZ format (CP2K 2026.1+).
+        Extended XYZ uses "Properties=..." in the comment line to specify
+        column format, enabling additional per-atom properties like forces.
+
+        Extended XYZ example:
+            3
+            Properties=species:S:1:pos:R:3:forces:R:3 energy=-76.123 pbc="F F F"
+            O  0.0  0.0  0.117  0.001  0.002 -0.003
+            H  0.0  0.757 -0.469  0.005  0.001  0.001
+            H  0.0 -0.757 -0.469 -0.006 -0.003  0.002
+        """
+        try:
+            with open(traj_file, "r") as f:
+                lines = f.readlines()
+
+            if not lines:
+                return None
+
+            # Parse frames - each frame starts with atom count
+            frames = []
+            i = 0
+            while i < len(lines):
+                line = lines[i].strip()
+                if not line:
+                    i += 1
+                    continue
+
+                try:
+                    n_atoms = int(line)
+                except ValueError:
+                    i += 1
+                    continue
+
+                # Ensure we have enough lines for this frame
+                if i + 1 + n_atoms >= len(lines):
+                    break
+
+                # Line 2: comment line (may contain extended XYZ properties)
+                comment = lines[i + 1].strip()
+
+                # Parse atom coordinates (lines 3 to 2+n_atoms)
+                coords = []
+                for j in range(n_atoms):
+                    atom_line = lines[i + 2 + j].strip()
+                    parts = atom_line.split()
+                    if len(parts) >= 4:
+                        # Standard or extended XYZ: element x y z [optional properties]
+                        try:
+                            x = float(parts[1])
+                            y = float(parts[2])
+                            z = float(parts[3])
+                            coords.append([x, y, z])
+                        except (ValueError, IndexError):
+                            break
+
+                if len(coords) == n_atoms:
+                    frames.append(coords)
+
+                i += 2 + n_atoms
+
+            if frames:
+                # Return last frame coordinates
+                return Coordinates(frames[-1], units="Å")
+
+        except Exception as e:
+            logger.debug(f"Could not parse XYZ trajectory: {e}")
+
+        return None
 
     def gradient_from(self, calc: "CalculationExecutor") -> Gradient:
         """Parse gradients from CP2K output"""
@@ -484,6 +682,36 @@ class CP2K(autode.wrappers.methods.ExternalMethodOEGH):
 
         if charges:
             return charges
+
+        raise NotImplementedInMethod
+
+    def excited_state_energies_from(self, calc: "CalculationExecutor") -> List[float]:
+        """Parse excited state energies from TDDFT/SF-TDDFT output (CP2K 2026.1+)
+
+        Returns excitation energies in eV for each computed excited state.
+        Works for both standard TDDFPT and SF-TDDFT calculations.
+
+        Raises:
+            NotImplementedInMethod: If no TDDFT data found in output
+        """
+        energies_ev = []
+
+        for line in calc.output.file_lines:
+            # TDDFPT output format: "  STATE   1:  Energy =     3.456789 eV"
+            # or: "      1      3.456789      0.0123     ..."
+            if "Energy =" in line and "eV" in line:
+                try:
+                    parts = line.split()
+                    for i, part in enumerate(parts):
+                        if part == "=" and i + 1 < len(parts):
+                            energy = float(parts[i + 1])
+                            energies_ev.append(energy)
+                            break
+                except (ValueError, IndexError):
+                    continue
+
+        if energies_ev:
+            return energies_ev
 
         raise NotImplementedInMethod
 
