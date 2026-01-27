@@ -461,9 +461,22 @@ def mlip_preoptimize(
             logger.info(f"MLIP pre-optimization converged in {step + 1} steps")
             break
 
-        # Simple steepest descent update
-        step_size = 0.1
-        current_coords += step_size * forces
+        # Steepest descent with step size limiting
+        # Forces are in Ha/Angstrom, coordinates in Angstrom
+        # Use small step size and limit max displacement per atom
+        step_size = 0.01  # Small step size for stability
+        max_displacement = 0.05  # Max Angstrom per atom per step
+
+        # Calculate displacement = step_size * forces
+        displacement = step_size * forces
+
+        # Limit maximum displacement per atom to prevent explosion
+        for i in range(len(displacement)):
+            atom_disp = np.linalg.norm(displacement[i])
+            if atom_disp > max_displacement:
+                displacement[i] *= max_displacement / atom_disp
+
+        current_coords += displacement
 
     # Create new molecule with optimized coordinates
     from autode import Atom
