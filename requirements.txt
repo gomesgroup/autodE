@@ -1,5 +1,5 @@
 rdkit
-numpy==1.26
+numpy>=1.26,<3
 networkx
 matplotlib
 pillow>=9.5.0
