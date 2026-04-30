@@ -7,6 +7,7 @@ from autode.wrappers.ORCA import ORCA
 from autode.wrappers.QChem import QChem
 from autode.wrappers.MOPAC import MOPAC
 from autode.wrappers.XTB import XTB
+from autode.wrappers.GXTB import GXTB
 from autode.wrappers.GPU4PySCF import GPU4PySCF
 from autode.wrappers.TeraChem import TeraChem
 from autode.wrappers.CP2K import CP2K
@@ -25,7 +26,7 @@ which are fast non ab-initio methods
 """
 
 high_level_method_names = ["orca", "g09", "g16", "nwchem", "qchem", "gpu4pyscf", "terachem", "cp2k"]
-low_level_method_names = ["xtb", "mopac"]
+low_level_method_names = ["xtb", "gxtb", "mopac"]
 
 
 def method_or_default_lmethod(method: Optional["Method"]) -> "Method":
@@ -89,7 +90,7 @@ def get_lmethod() -> "Method":
         (Method): Low-level method
     """
 
-    all_methods = [XTB(), MOPAC(), ORCA(), G16(), G09(), NWChem(), QChem()]
+    all_methods = [XTB(), GXTB(), MOPAC(), ORCA(), G16(), G09(), NWChem(), QChem()]
 
     if Config.lcode is not None:
         return get_defined_method(name=Config.lcode, possibilities=all_methods)

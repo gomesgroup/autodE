@@ -67,6 +67,35 @@ complex = dock_molecules(reactant1, reactant2, method=ade.methods.ORCA())
 # Finds optimal pre-reactive geometry for SN2 reaction
 ```
 
+### g-xTB Driver
+
+The fork ships a first-class `GXTB` low-level method (`autode/wrappers/GXTB.py`). It is registered in `autode.methods` so it can be selected by name (`Config.lcode = "gxtb"`) or imported directly:
+
+```python
+import autode as ade
+from autode.methods import GXTB
+
+# Single-point or optimization
+mol = ade.Molecule(smiles="CC(=O)Oc1ccccc1C(=O)O", name="aspirin")
+mol.optimise(method=GXTB())
+print(mol.energy)
+
+# As the low-level method in a reaction profile
+ade.Config.lcode = "gxtb"
+ade.Config.hcode = "orca"
+rxn = ade.Reaction("CC(=O)O.CO>>CC(=O)OC.O", name="esterification")
+rxn.calculate_reaction_profile()
+```
+
+`GXTB` is a thin subclass of `XTB` that:
+
+- points at the g-xTB binary (override via the `GXTB_PATH` env var; defaults to `/mnt/beegfs/software/g-xtb-2.0.0/x86_64/bin/xtb` on the gpg cluster),
+- forces `gfn_version = None` (g-xTB has its own parameter set),
+- prepends `--gxtb` to the runtime flag list, and
+- preserves the implicit `--opt` / `--grad` flags that the parent class would otherwise suppress when a non-empty keyword list is present.
+
+Verified bit-identical SP energies vs. direct `xtb --gxtb` invocation; clean opt convergence on both x86_64 (native) and ARM64 (QEMU).
+
 ### Version Detection Fix
 
 This fork fixes a critical bug where ORCA 6.x was incorrectly detected as ORCA 4.x:
@@ -99,6 +128,7 @@ print(orca.major_version)   # 6
 * **Recommended Low-Level Method:**
    * [XTB](https://github.com/grimme-lab/xtb) >= 6.5 (**Recommended**)
 * Alternative Low-Level Methods:
+   * [g-xTB](https://github.com/grimme-lab/g-xtb) 2.0+ (Grimme's general-purpose semiempirical method, approximating ωB97M-V/def2-TZVPPD-quality results for Z = 1–103)
    * [MOPAC](http://openmopac.net/)
 
 **Optional Dependencies:**
