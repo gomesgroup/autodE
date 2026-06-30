@@ -284,6 +284,22 @@ class Species(AtomCollection):
         return None
 
     @property
+    def distance_matrix(self) -> np.ndarray:
+        """
+        Pairwise (Euclidean) interatomic distance matrix in Å, of shape
+        (n_atoms, n_atoms). Element [i, j] is the distance between atoms i
+        and j; the diagonal is zero.
+
+        -----------------------------------------------------------------------
+        Returns:
+            (np.ndarray):
+        """
+        if self.atoms is None or self.n_atoms == 0:
+            return np.empty((0, 0))
+
+        return distance_matrix(self.coordinates, self.coordinates)
+
+    @property
     def graph(self) -> Optional[MolecularGraph]:
         """
         Molecular graph with atoms(V) and bonds(E)

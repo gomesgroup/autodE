@@ -28,3 +28,8 @@ env/
 env-arm64/
 micromamba/
 .serena/
+
+# GPU4PySCF unified overlay envs (build artifacts, live on BeeGFS)
+env-gpu-x86/
+env-gpu-arm64/
+*.bak-*

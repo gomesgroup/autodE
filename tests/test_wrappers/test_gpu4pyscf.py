@@ -65,7 +65,6 @@ def test_gpu4pyscf_basis_functional():
     assert calc2.terminated_normally
     
     # Energies should be different with different methods
-    import pdb; pdb.set_trace()
     assert abs(float(calc1.molecule.energy) - float(calc2.molecule.energy)) > 1E-6
 
 

@@ -38,56 +38,64 @@ class GPU4PySCF(autode.wrappers.methods.ExternalMethodOEGH):
         self._mf = None  # Store the mean field object
         self._mol = None  # Store the molecule object
         self._energy = None  # Store the energy
+        self._gradient = None  # Store the nuclear gradient (Ha / Bohr)
         self._hessian = None  # Store the Hessian matrix
 
     @property
     def is_available(self) -> bool:
-        """Check if GPU4PySCF is available by trying to import it"""
+        """Check if GPU4PySCF is importable.
+
+        GPU device selection is left to the environment: under SLURM,
+        ``--gres=gpu:N`` already constrains ``CUDA_VISIBLE_DEVICES`` to the
+        allocated GPU, so picking a device here is unnecessary. We do a
+        best-effort pin to the GPU with the most free memory *only* when the
+        optional ``pynvml``/``nvidia_smi`` binding is present and
+        ``CUDA_VISIBLE_DEVICES`` has not already been set -- never failing if
+        that binding is missing (it is not a hard dependency).
+        """
         try:
-            import os
-            import nvidia_smi
-            # Initialize NVIDIA SMI
-            nvidia_smi.nvmlInit()
-            n_devices = nvidia_smi.nvmlDeviceGetCount()            
-            max_free_memory = 0
-            best_gpu = None
-            # Check each GPU
-            for i in range(n_devices):
-                handle = nvidia_smi.nvmlDeviceGetHandleByIndex(i)
-                try:
-                    info = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
-                    free_mem = info.free/1024**3  # Convert to GB
-                    # name = nvidia_smi.nvmlDeviceGetName(handle).decode()
-                    
-                    if free_mem > max_free_memory:
-                        max_free_memory = free_mem
-                        best_gpu = i
-                        
-                except nvidia_smi.NVMLError:
-                    continue
-            if best_gpu is None:
-                return False        
-            # Set the GPU with most available memory
-            os.environ["CUDA_VISIBLE_DEVICES"] = str(best_gpu)
-            import gpu4pyscf
-            return True
-        
-        except (ImportError, nvidia_smi.NVMLError):
+            import gpu4pyscf  # noqa: F401
+        except ImportError:
             return False
+
+        self._maybe_select_gpu()
+        return True
+
+    @staticmethod
+    def _maybe_select_gpu() -> None:
+        """Best-effort: pin the GPU with the most free memory, if possible.
+
+        Silently does nothing when no NVML binding is available or when the
+        environment has already chosen the device.
+        """
+        import os
+
+        if os.environ.get("CUDA_VISIBLE_DEVICES"):
+            return
+        try:
+            import pynvml as nvml
+        except ImportError:
+            try:
+                import nvidia_smi as nvml
+            except ImportError:
+                return
+        try:
+            nvml.nvmlInit()
+            best_gpu, max_free = None, -1.0
+            for i in range(nvml.nvmlDeviceGetCount()):
+                handle = nvml.nvmlDeviceGetHandleByIndex(i)
+                free = nvml.nvmlDeviceGetMemoryInfo(handle).free
+                if free > max_free:
+                    best_gpu, max_free = i, free
+            if best_gpu is not None:
+                os.environ["CUDA_VISIBLE_DEVICES"] = str(best_gpu)
+        except Exception:
+            return
         finally:
             try:
-                nvidia_smi.nvmlShutdown()
-            except:
+                nvml.nvmlShutdown()
+            except Exception:
                 pass
-
-    # @property
-    # def is_available(self) -> bool:
-    #     """Check if GPU4PySCF is available by trying to import it"""
-    #     try:
-    #         import gpu4pyscf
-    #         return True
-    #     except ImportError:
-    #         return False
 
     @property
     def uses_external_io(self) -> bool:
@@ -140,8 +148,26 @@ class GPU4PySCF(autode.wrappers.methods.ExternalMethodOEGH):
             coords = np.array(self._mol.atom_coords()) * bohr_to_angstrom
             for i, atom in enumerate(calc.molecule.atoms):
                 atom.coord = coords[i]
+
+            # PySCF's geometric optimiser raises on non-convergence, so a
+            # returned geometry implies success. Expose that to autodE via the
+            # executor's optimiser so ``calc.optimiser.converged`` is True.
+            calc.optimiser = GPU4PySCFOptimiser(converged=True)
         else:
             self._energy = self._mf.kernel()
+
+            # If a gradient is requested (e.g. for NEB / adaptive paths),
+            # compute the analytic nuclear gradient (Hartree / Bohr).
+            if isinstance(calc.input.keywords, kws.GradientKeywords):
+                g = self._mf.nuc_grad_method().kernel()
+                # gpu4pyscf may return a CuPy array; bring it to host.
+                self._gradient = np.asarray(g.get() if hasattr(g, "get") else g)
+                # autodE's property check (and downstream consumers such as
+                # NEB / adaptive-path) read the gradient off the molecule.
+                # GPU4PySCF returns Ha / Bohr; autodE's default is Ha / Å.
+                calc.molecule.gradient = Gradient(
+                    self._gradient, units="Ha a0^-1"
+                ).to("Ha Å^-1")
 
             # If frequency calculation is requested, compute Hessian
             if isinstance(calc.input.keywords, kws.HessianKeywords):
@@ -198,9 +224,15 @@ class GPU4PySCF(autode.wrappers.methods.ExternalMethodOEGH):
         return Coordinates(coords, units="Å")
 
     def gradient_from(self, calc: "CalculationExecutor") -> Gradient:
-        """Get the gradient from the calculation"""
-        # TODO: Implement gradient extraction from GPU4PySCF
-        raise NotImplementedInMethod
+        """Get the nuclear gradient from the calculation.
+
+        GPU4PySCF returns the gradient in Hartree / Bohr; autodE's default
+        gradient unit is Hartree / Angstrom, so convert (matching the ORCA
+        and other wrappers).
+        """
+        if self._gradient is None:
+            raise CouldNotGetProperty(name="gradient")
+        return Gradient(self._gradient, units="Ha a0^-1").to("Ha Å^-1")
 
     def partial_charges_from(self, calc: "CalculationExecutor") -> List[float]:
         """Get partial charges - not implemented yet"""

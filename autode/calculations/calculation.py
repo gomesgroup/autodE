@@ -187,6 +187,14 @@ class Calculation:
         """The optimiser used to run this calculation"""
         return self._executor.optimiser
 
+    def get_gradients(self):
+        """The gradient (Ha / Å) of the molecule from this calculation"""
+        return self.molecule.gradient
+
+    def get_energy(self):
+        """The potential energy of the molecule from this calculation"""
+        return self.molecule.energy
+
     def copy(self) -> "Calculation":
         return deepcopy(self)
 

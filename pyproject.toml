@@ -28,6 +28,14 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/duartegroup/autodE"
 
+# Constrain package discovery to the autode tree. Without this, modern
+# setuptools (>=61 flat-layout autodiscovery) errors on the stray top-level
+# "micromamba" helper directory in the repo root ("Multiple top-level packages
+# discovered in a flat-layout"). The Cython Extension modules are declared in
+# setup.py and are unaffected by this setting.
+[tool.setuptools.packages.find]
+include = ["autode*"]
+
 [project.optional-dependencies]
 dev = ["black", "pre-commit"]
 
