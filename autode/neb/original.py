@@ -98,8 +98,15 @@ def total_energy(flat_coords, images, method, n_cores, plot_energies):
         f"{n_cores} total cores and {n_cores_pp} per process"
     )
 
-    # Run an energy + gradient evaluation across all images (parallel for EST)
-    if isinstance(method, IDPP):
+    # Run an energy + gradient evaluation across all images. IDPP and in-memory
+    # methods are evaluated serially in this process; in particular GPU4PySCF
+    # holds a CUDA context that cannot survive process forking, so it must not
+    # be dispatched to a ProcessPool. Only external-program methods (ORCA, etc.,
+    # uses_external_io=True) are parallelised across images.
+    in_process = isinstance(method, IDPP) or not getattr(
+        method, "uses_external_io", True
+    )
+    if in_process:
         images[1:-1] = [
             energy_gradient(images[i], method, n_cores_pp)
             for i in range(1, len(images) - 1)

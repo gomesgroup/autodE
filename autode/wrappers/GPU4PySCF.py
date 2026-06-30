@@ -117,22 +117,24 @@ class GPU4PySCF(autode.wrappers.methods.ExternalMethodOEGH):
                          charge=calc.molecule.charge,
                          spin=calc.molecule.mult-1)
 
-        # Set basis
+        # Set basis. Prefer a GPU4PySCF-specific keyword's ``.gpu4pyscf`` name,
+        # but fall back to the keyword's plain name so a generic BasisSet (e.g.
+        # the shared ``def2tzvp``) does not raise AttributeError.
         basis = 'def2-svp'  # default
         for keyword in calc.input.keywords:
             if isinstance(keyword, kws.BasisSet):
-                basis = keyword.gpu4pyscf
+                basis = getattr(keyword, 'gpu4pyscf', None) or str(keyword)
         self._mol.basis = basis
         self._mol.build()
 
         # Set up DFT calculation
         self._mf = dft.RKS(self._mol)
 
-        # Set functional
+        # Set functional (same generic-keyword fallback as the basis)
         functional = 'pbe0'  # default
         for keyword in calc.input.keywords:
             if isinstance(keyword, kws.Functional):
-                functional = keyword.gpu4pyscf
+                functional = getattr(keyword, 'gpu4pyscf', None) or str(keyword)
         self._mf.xc = functional
 
         # Run calculation
