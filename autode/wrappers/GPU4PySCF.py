@@ -148,6 +148,11 @@ class GPU4PySCF(autode.wrappers.methods.ExternalMethodOEGH):
             constraint_file = self._write_constraints(calc.molecule)
             if constraint_file is not None:
                 opt_kwargs["constraints"] = constraint_file
+            # A transition-state search (OptTSKeywords) is a saddle-point
+            # optimisation, not a minimisation. geomTRIC does eigenvector
+            # following when transition=True is passed through optimize().
+            if isinstance(calc.input.keywords, kws.OptTSKeywords):
+                opt_kwargs["transition"] = True
             # Run geometry optimization using PySCF's geometric optimizer
             try:
                 mol_eq = optimize(self._mf, **opt_kwargs)
