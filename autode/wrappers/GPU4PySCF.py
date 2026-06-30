@@ -177,7 +177,16 @@ class GPU4PySCF(autode.wrappers.methods.ExternalMethodOEGH):
                 h.auxbasis_response = 1  # Reduce auxiliary basis response level
                 h.max_memory = 2000  # Limit memory usage to 4GB
                 hess = h.kernel()
-                
+                # gpu4pyscf may return a CuPy array; bring it to host.
+                hess = np.asarray(hess.get() if hasattr(hess, "get") else hess)
+                # PySCF/GPU4PySCF return the molecular Hessian as
+                # (natm, natm, 3, 3); autodE's Hessian wants a (3N, 3N) matrix.
+                if hess.ndim == 4:
+                    n_atoms = hess.shape[0]
+                    hess = hess.transpose(0, 2, 1, 3).reshape(
+                        3 * n_atoms, 3 * n_atoms
+                    )
+
                 # Set the Hessian in the molecule object
                 calc.molecule.hessian = Hessian(
                     hess,
