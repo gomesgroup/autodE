@@ -214,10 +214,17 @@ class AdaptivePath(Path):
         calc.run()
         point.reset_graph()
 
-        if self.method.name == "xtb" or self.method.name == "mopac":
+        if (
+            self.method.name == "xtb"
+            or self.method.name == "mopac"
+            or point.gradient is None
+        ):
             # XTB prints gradients including the constraints, which are ~0
             # the gradient here is just the derivative of the electronic energy
-            # so rerun a gradient calculation, which should be very fast
+            # so rerun a gradient calculation, which should be very fast.
+            # The ``point.gradient is None`` case also covers in-memory methods
+            # (e.g. GPU4PySCF) whose constrained opt leaves no gradient on the
+            # molecule, so a separate grad calc is required.
             # while MOPAC doesn't print gradients for a constrained opt
             tmp_point_for_grad = point.new_species()
             assert self.method.keywords.grad is not None

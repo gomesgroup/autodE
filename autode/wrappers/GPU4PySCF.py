@@ -2,7 +2,7 @@ import numpy as np
 import autode.wrappers.keywords as kws
 import autode.wrappers.methods
 
-from typing import List, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
 
 from autode.values import PotentialEnergy, Gradient, Coordinates
 from autode.opt.optimisers.base import ExternalOptimiser
@@ -139,8 +139,26 @@ class GPU4PySCF(autode.wrappers.methods.ExternalMethodOEGH):
 
         # Run calculation
         if isinstance(calc.input.keywords, kws.OptKeywords):
+            # Honour any distance constraints autodE has set on the molecule
+            # (e.g. the constrained optimisations driving an adaptive path).
+            # geomTRIC (used by PySCF's optimizer) reads them from a file:
+            #   $set
+            #   distance <a> <b> <value/Å>     (atom indices are 1-based)
+            opt_kwargs = {}
+            constraint_file = self._write_constraints(calc.molecule)
+            if constraint_file is not None:
+                opt_kwargs["constraints"] = constraint_file
             # Run geometry optimization using PySCF's geometric optimizer
-            mol_eq = optimize(self._mf)
+            try:
+                mol_eq = optimize(self._mf, **opt_kwargs)
+            finally:
+                if constraint_file is not None:
+                    import os
+
+                    try:
+                        os.remove(constraint_file)
+                    except OSError:
+                        pass
             self._mol = mol_eq  # Update molecule with optimized geometry
             self._mf = dft.RKS(self._mol)  # Create new RKS object with optimized geometry
             self._mf.xc = functional
@@ -205,6 +223,35 @@ class GPU4PySCF(autode.wrappers.methods.ExternalMethodOEGH):
             x, y, z = atom.coord
             xyz.append(f"{atom.label:<3} {x:^12.8f} {y:^12.8f} {z:^12.8f}")
         return "\n".join(xyz)
+
+    @staticmethod
+    def _write_constraints(molecule) -> Optional[str]:
+        """Write autodE's distance constraints as a geomTRIC ``$set`` file.
+
+        Returns the path to a temporary constraints file, or ``None`` if the
+        molecule carries no distance constraints. geomTRIC expects 1-based atom
+        indices and distances in Angstrom.
+        """
+        constraints = getattr(molecule, "constraints", None)
+        distances = (
+            getattr(constraints, "distance", None) if constraints else None
+        )
+        if not distances:
+            return None
+
+        import os
+        import tempfile
+
+        lines = ["$set"]
+        for (i, j), dist in distances.items():
+            lines.append(f"distance {i + 1} {j + 1} {float(dist):.8f}")
+
+        fd, path = tempfile.mkstemp(
+            prefix="gpu4pyscf_constr_", suffix=".txt", text=True
+        )
+        with os.fdopen(fd, "w") as fh:
+            fh.write("\n".join(lines) + "\n")
+        return path
 
     def terminated_normally_in(self, calc: "CalculationExecutor") -> bool:
         """Check if the calculation terminated normally"""
