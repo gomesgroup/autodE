@@ -458,8 +458,11 @@ class NumericalHessianCalculator:
             logger.info("Calculating gradient at current point")
             self._init_gradient = self._gradient(species=self._species)
 
-        # if run in a child process, do serial calculation
-        if mp.parent_process() is not None:
+        # If run in a child process, or for an in-memory method (e.g. GPU4PySCF,
+        # whose CUDA context cannot survive process forking), do serial.
+        if mp.parent_process() is not None or not getattr(
+            self._method, "uses_external_io", True
+        ):
             return self._calculate_in_serial()
 
         # Although n_rows may be < n_cores there will not be > n_rows processes

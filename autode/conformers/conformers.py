@@ -276,6 +276,16 @@ class Conformers(list):
 
         n_cores_pp = max(Config.n_cores // len(self), 1)
 
+        # In-memory methods (e.g. GPU4PySCF) hold a CUDA context that cannot
+        # survive process forking, so run them serially in this process rather
+        # than dispatching to a ProcessPool.
+        if not getattr(method, "uses_external_io", True):
+            for idx, conf in enumerate(self):
+                self[idx] = _calc_conformer(
+                    conf, calc_type, method, keywords, n_cores=n_cores_pp
+                )
+            return None
+
         with ProcessPool(max_workers=Config.n_cores // n_cores_pp) as pool:
             jobs = [
                 pool.submit(
