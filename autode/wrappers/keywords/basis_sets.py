@@ -51,6 +51,8 @@ class GPU4PySCFBasisSet(BasisSet):
     def __init__(self, name):
         super().__init__(name=name)
         self.gpu4pyscf = name
+        # VeloxChem reads the same basis-set labels via MolecularBasis.read.
+        self.veloxchem = name
         self.python = name  # Add this line to match the executable name
 
 # Common basis sets available in GPU4PySCF
