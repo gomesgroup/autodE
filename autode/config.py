@@ -408,6 +408,25 @@ class _ConfigClass:
         )
         implicit_solvation_type = None
 
+    class VeloxChem:
+        """VeloxChem configuration (CPU DFT/HF, external-IO subprocess).
+
+        ``path`` is the VeloxChem env's Python interpreter; override with the
+        ``VELOXCHEM_PYTHON`` environment variable. Runs on the x86_64 Ubuntu
+        (cpu-epyc) nodes -- the conda binary needs glibc >= 2.32.
+        """
+        path = "/mnt/beegfs/software/veloxchem-1.0rc4/x86_64/env/bin/python"
+        keywords = KeywordsSet(
+            low_opt=[pbe0, def2_svp, "Opt=Loose", MaxOptCycles(10)],
+            grad=[pbe0, def2_svp, "Force"],
+            low_sp=[pbe0, def2_svp],
+            opt=[pbe0, def2_svp, "Opt"],
+            opt_ts=[pbe0, def2_svp, "Freq"],
+            hess=[pbe0, def2_svp, "Freq"],
+            sp=[pbe0, def2_tzvp],
+        )
+        implicit_solvation_type = None
+
     class TeraChem:
         # ---------------------------------------------------------------------
         # Parameters for TeraChem               https://www.petachem.com/

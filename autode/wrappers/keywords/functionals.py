@@ -12,6 +12,8 @@ class GPU4PySCFFunctional(Functional):
         super().__init__(name=name)
         self.gpu4pyscf = name
         self.python = name
+        # VeloxChem uses the same lowercase functional names (xcfun).
+        self.veloxchem = name
 
 # LDA functionals
 lda = GPU4PySCFFunctional('lda')
