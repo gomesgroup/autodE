@@ -427,6 +427,42 @@ class _ConfigClass:
         )
         implicit_solvation_type = None
 
+    class UMA:
+        """UMA MLIP configuration (fairchem, external-IO subprocess).
+
+        ``path`` is the explorer MLIP env's Python interpreter (the one that
+        ships ``fairchem-core`` + ``torch`` + ``ase``); override with the
+        ``UMA_PROVIDER_PYTHON`` environment variable. The subprocess runs the
+        provider script (``UMA_PROVIDER`` env var, else the bundled
+        ``providers/uma_provider.py``) which loads the local UMA weights
+        (``UMA_MODEL``, default ``uma-s-1p1.pt``) and drives ASE.
+
+        The keyword lists carry only ASE optimiser controls -- UMA ignores
+        functional/basis. ``fmax`` (eV/Angstrom) and ``max-steps`` are parsed
+        out of the opt keyword list by the wrapper.
+        """
+
+        # Arch-detected default: x86 explorer env on x86_64, mlip ARM64 env on
+        # aarch64. Overridable via UMA_PROVIDER_PYTHON.
+        import platform as _platform
+
+        if _platform.machine() == "aarch64":
+            path = "/mnt/beegfs/software/envs/explorer-mlip-arm64/bin/python"
+        else:
+            path = "/mnt/beegfs/software/envs/explorer-x86_64/bin/python"
+        del _platform
+
+        keywords = KeywordsSet(
+            low_opt=["opt", "fmax=0.05", MaxOptCycles(50)],
+            grad=["grad"],
+            low_sp=["sp"],
+            opt=["opt", "fmax=0.02", MaxOptCycles(300)],
+            opt_ts=["opt", "fmax=0.02", MaxOptCycles(300)],
+            hess=["hess"],
+            sp=["sp"],
+        )
+        implicit_solvation_type = None
+
     class TeraChem:
         # ---------------------------------------------------------------------
         # Parameters for TeraChem               https://www.petachem.com/
