@@ -39,6 +39,13 @@ class _ConfigClass:
     #
     lcode = None
     # -------------------------------------------------------------------------
+    # Seed builder for transition-metal complex geometries built from SMILES.
+    # 'metallogen' (default, arch-portable UMA-MLIP backend) | 'molsimplify'
+    # (x86_64-only fallback) | 'auto' (arch-portable first) | 'off' (keep
+    # autodE's VSEPR Builder path for metals, i.e. pre-metal-builder behaviour).
+    #
+    metal_seed_builder = "metallogen"
+    # -------------------------------------------------------------------------
     # When using explicit solvent is stable this will be uncommented
     #
     # explicit_solvent = False

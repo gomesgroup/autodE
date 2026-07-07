@@ -15,6 +15,10 @@ from autode.log import logger
 from autode.mol_graphs import make_graph
 from autode.smiles.smiles import init_organic_smiles
 from autode.smiles.smiles import init_smiles
+from autode.species.metal_builder import (
+    is_transition_metal_complex,
+    init_metal_smiles,
+)
 from autode.species.species import Species
 from autode.utils import requires_atoms, ProcessPool, total_electrons
 
@@ -100,7 +104,16 @@ class Molecule(Species):
         at_strings = re.findall(r"\[.*?]", smiles)
 
         if any(metal in string for metal in metals for string in at_strings):
-            init_smiles(self, smiles)
+            # Transition-metal complexes route to the pluggable seed-builder
+            # (MetalloGen/molSimplify) unless disabled; main-group metals keep
+            # autodE's Builder path.
+            if (
+                getattr(Config, "metal_seed_builder", "metallogen") != "off"
+                and is_transition_metal_complex(smiles)
+            ):
+                init_metal_smiles(self, smiles)
+            else:
+                init_smiles(self, smiles)
 
         else:
             init_organic_smiles(self, smiles)
@@ -152,7 +165,6 @@ class Molecule(Species):
             and self.charge % 2 == 0
             and self.mult == 1
         ):
-            import pdb; pdb.set_trace()
             raise ValueError(
                 "Initialised a molecule from an xyz file with  "
                 "an odd number of electrons but had an even "
