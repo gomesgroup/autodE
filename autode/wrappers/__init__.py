@@ -34,6 +34,7 @@ from autode.wrappers.irc import (
 from autode.wrappers.mlip_external import (
     MLIPCalculation,
     MLIPAcceleratedNEB,
+    MLIPNEBResult,
     check_mlip_server,
     get_available_mlip_models,
     find_best_mlip_server,
@@ -67,6 +68,7 @@ __all__ = [
     # MLIP External
     "MLIPCalculation",
     "MLIPAcceleratedNEB",
+    "MLIPNEBResult",
     "check_mlip_server",
     "get_available_mlip_models",
     "find_best_mlip_server",

@@ -15,11 +15,14 @@ Reference:
     https://www.faccts.de/docs/orca/6.1/manual/
 """
 
-from typing import List, Tuple, Optional, Dict, Any
-from dataclasses import dataclass, field
+from typing import List, Tuple, Optional, Dict, Any, Mapping
+from dataclasses import asdict, dataclass, field, replace
+import hashlib
 import os
 import subprocess
 import json
+from pathlib import Path as FilePath
+import uuid
 
 from autode.wrappers.keywords.orca6 import (
     MLIPConfig,
@@ -475,61 +478,417 @@ def mlip_preoptimize(
     return Molecule(atoms=new_atoms, charge=molecule.charge, mult=molecule.mult)
 
 
+@dataclass(frozen=True)
+class MLIPNEBResult:
+    """Serializable outcome of an explicitly configured MLIP-only CINEB."""
+
+    schema_version: int
+    status: str
+    converged: bool
+    resumed: bool
+    n_images: int
+    n_cores: int
+    max_steps: int
+    method_name: str
+    method_repr: str
+    method_provenance: Dict[str, Any]
+    optimizer_message: Optional[str] = None
+    optimizer_n_iterations: Optional[int] = None
+    optimizer_n_evaluations: Optional[int] = None
+    checkpoint_path: Optional[str] = None
+    checkpoint_sha256: Optional[str] = None
+    ts_guess_coordinates: Optional[
+        Tuple[Tuple[float, float, float], ...]
+    ] = None
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None
+
+
 class MLIPAcceleratedNEB:
     """
-    MLIP-accelerated NEB for transition state finding.
+    MLIP-only climbing-image NEB for transition-state guess generation.
 
-    Uses MLIP for initial path optimization, then refines with DFT.
+    The caller must inject a concrete MLIP ``Method`` and its provenance.
+    This class never resolves an implicit low-/high-level method.
     """
 
     def __init__(
         self,
         reactant,
         product,
-        mlip_model: str = "aimnet2",
-        dft_method: str = "r2SCAN-3c",
+        *,
+        method,
+        method_provenance: Mapping[str, Any],
         n_images: int = 12,
-        server_url: Optional[str] = None,
+        result_dir=os.path.join("mlip_neb"),
     ):
         """
-        Initialize MLIP-accelerated NEB.
+        Initialize an explicitly configured MLIP-only NEB.
 
         Args:
             reactant: Reactant molecule
             product: Product molecule
-            mlip_model: MLIP model for initial optimization
-            dft_method: DFT method for refinement
+            method: Concrete MLIP-backed autoDE Method
+            method_provenance: Non-empty JSON-serializable scientific identity
             n_images: Number of NEB images
-            server_url: MLIP server URL
+            result_dir: Directory for the result receipt and path checkpoint
         """
+        from autode.species.species import Species
+        from autode.wrappers.methods import Method
+
+        if not isinstance(reactant, Species) or not isinstance(product, Species):
+            raise TypeError("reactant and product must be autoDE Species")
+        if not isinstance(method, Method):
+            raise TypeError("method must be an autoDE Method")
+        if not isinstance(n_images, int) or isinstance(n_images, bool):
+            raise TypeError("n_images must be an integer")
+        if n_images < 3:
+            raise ValueError("MLIP NEB requires at least three images")
+        if reactant.sorted_atomic_symbols != product.sorted_atomic_symbols:
+            raise ValueError("MLIP NEB endpoints contain different atoms")
+        if not isinstance(method_provenance, Mapping) or not method_provenance:
+            raise ValueError("method provenance must be a non-empty mapping")
+        try:
+            canonical_provenance = json.dumps(
+                dict(method_provenance),
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "method provenance must be JSON serializable"
+            ) from error
+
         self.reactant = reactant
         self.product = product
-        self.mlip_model = mlip_model
-        self.dft_method = dft_method
+        self.method = method
+        self.method_provenance = json.loads(canonical_provenance)
         self.n_images = n_images
-        self.server_url = server_url or find_best_mlip_server()
+        self.result_dir = FilePath(result_dir).expanduser().resolve()
 
         self.mlip_path = None
-        self.dft_path = None
         self.ts_guess = None
+        self.last_result = None
 
-    def run_mlip_neb(self, max_steps: int = 200):
-        """Run NEB with MLIP (fast initial path)."""
-        # This would use MLIP for NEB optimization
-        # Implementation depends on NEB infrastructure in autodE
-        logger.info(f"Running MLIP NEB with {self.n_images} images")
-        # TODO: Implement MLIP NEB
+    @property
+    def _receipt_path(self) -> FilePath:
+        return self.result_dir / "mlip-neb-result.json"
 
-    def refine_with_dft(self, n_cores: int = 1):
-        """Refine TS guess with DFT optimization."""
-        from autode.calculations import Calculation
-        from autode.wrappers.ORCA import orca
+    @property
+    def _checkpoint_path(self) -> FilePath:
+        return self.result_dir / "mlip-neb-checkpoint.xyz"
 
-        if self.ts_guess is None:
-            raise RuntimeError("No TS guess from MLIP NEB")
+    @staticmethod
+    def _sha256(path: FilePath) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
-        # Run DFT TS optimization
-        # TODO: Implement DFT refinement
+    @staticmethod
+    def _canonical_sha256(payload: Mapping[str, Any]) -> str:
+        serialized = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        return hashlib.sha256(serialized).hexdigest()
+
+    @classmethod
+    def _endpoint_sha256(cls, species) -> str:
+        return cls._canonical_sha256(
+            {
+                "symbols": [atom.label for atom in species.atoms],
+                "coordinates_angstrom": [
+                    [float(value) for value in atom.coord]
+                    for atom in species.atoms
+                ],
+                "charge": int(species.charge),
+                "multiplicity": int(species.mult),
+            }
+        )
+
+    def _request(self, *, max_steps: int, n_cores: int) -> Dict[str, Any]:
+        method_type = type(self.method)
+        return {
+            "reactant_sha256": self._endpoint_sha256(self.reactant),
+            "product_sha256": self._endpoint_sha256(self.product),
+            "n_images": self.n_images,
+            "max_steps": max_steps,
+            "n_cores": n_cores,
+            "method": {
+                "class": (
+                    f"{method_type.__module__}.{method_type.__qualname__}"
+                ),
+                "name": self.method.name,
+                "repr": repr(self.method),
+                "gradient_keywords": [
+                    str(keyword) for keyword in self.method.keywords.grad
+                ],
+            },
+            "method_provenance": dict(self.method_provenance),
+        }
+
+    @staticmethod
+    def _atomic_write_json(path: FilePath, payload: Mapping[str, Any]) -> None:
+        temporary = path.with_name(
+            f".{path.stem}.{uuid.uuid4().hex}.tmp.json"
+        )
+        try:
+            temporary.write_text(
+                json.dumps(
+                    payload,
+                    sort_keys=True,
+                    indent=2,
+                    allow_nan=False,
+                )
+                + "\n"
+            )
+            os.replace(temporary, path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
+    def _atomic_write_checkpoint(self) -> Tuple[Optional[str], Optional[str]]:
+        if self.mlip_path is None or len(self.mlip_path.images) == 0:
+            return None, None
+
+        checkpoint = self._checkpoint_path
+        temporary = checkpoint.with_name(
+            f".{checkpoint.stem}.{uuid.uuid4().hex}.tmp.xyz"
+        )
+        try:
+            for index, image in enumerate(self.mlip_path.images):
+                title = (
+                    f"autodE MLIP CINEB image {index}. "
+                    f"charge = {image.charge} mult = {image.mult} "
+                )
+                if image.energy is not None:
+                    title += f"E = {float(image.energy):.16g} "
+                image.print_xyz_file(
+                    title_line=title,
+                    filename=str(temporary),
+                    with_solvent=False,
+                    append=index > 0,
+                )
+            os.replace(temporary, checkpoint)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
+        return str(checkpoint.resolve()), self._sha256(checkpoint)
+
+    def _persist_result(
+        self,
+        result: MLIPNEBResult,
+        request: Mapping[str, Any],
+    ) -> MLIPNEBResult:
+        self.result_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_path, checkpoint_sha256 = (
+            self._atomic_write_checkpoint()
+        )
+        persisted = replace(
+            result,
+            checkpoint_path=checkpoint_path,
+            checkpoint_sha256=checkpoint_sha256,
+        )
+        payload = asdict(persisted)
+        payload["request"] = dict(request)
+        self._atomic_write_json(self._receipt_path, payload)
+        return persisted
+
+    def _load_resume(self, request: Mapping[str, Any]):
+        from autode.neb.ci import CINEB
+
+        receipt_exists = self._receipt_path.is_file()
+        checkpoint_exists = self._checkpoint_path.is_file()
+        if not receipt_exists and not checkpoint_exists:
+            return None
+        if receipt_exists != checkpoint_exists:
+            raise ValueError(
+                "MLIP NEB resume state is incomplete: receipt/checkpoint mismatch"
+            )
+        try:
+            receipt = json.loads(self._receipt_path.read_text())
+        except (OSError, TypeError, ValueError) as error:
+            raise ValueError("MLIP NEB resume receipt is invalid") from error
+        if (
+            not isinstance(receipt, dict)
+            or receipt.get("schema_version") != 1
+            or not isinstance(receipt.get("request"), dict)
+        ):
+            raise ValueError("MLIP NEB resume receipt is invalid")
+        if receipt["request"] != request:
+            raise ValueError(
+                "MLIP NEB resume request does not match persisted provenance"
+            )
+        expected_path = str(self._checkpoint_path.resolve())
+        if receipt.get("checkpoint_path") != expected_path:
+            raise ValueError("MLIP NEB resume checkpoint path does not match")
+        observed_digest = self._sha256(self._checkpoint_path)
+        if receipt.get("checkpoint_sha256") != observed_digest:
+            raise ValueError("MLIP NEB resume checkpoint digest does not match")
+
+        self.mlip_path = CINEB.from_file(str(self._checkpoint_path.resolve()))
+        if len(self.mlip_path.images) != self.n_images:
+            raise ValueError("MLIP NEB resume checkpoint image count differs")
+        result_fields = MLIPNEBResult.__dataclass_fields__
+        try:
+            result = MLIPNEBResult(
+                **{
+                    name: receipt[name]
+                    for name in result_fields
+                }
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("MLIP NEB resume receipt is invalid") from error
+        return replace(result, resumed=True)
+
+    def run_mlip_neb(
+        self,
+        max_steps: int = 200,
+        n_cores: int = 1,
+        calculation_runner=None,
+        resume: bool = True,
+    ) -> MLIPNEBResult:
+        """Run the native climbing-image NEB with the injected MLIP method."""
+        from autode.neb.ci import CINEB
+        from autode.transition_states.ts_guess import TSguess
+
+        if not isinstance(max_steps, int) or isinstance(max_steps, bool):
+            raise TypeError("max_steps must be an integer")
+        if max_steps < 1:
+            raise ValueError("max_steps must be positive")
+        if not isinstance(n_cores, int) or isinstance(n_cores, bool):
+            raise TypeError("n_cores must be an integer")
+        if n_cores < 1:
+            raise ValueError("n_cores must be positive")
+
+        logger.info(
+            f"Running explicit MLIP CINEB with {self.n_images} images"
+        )
+        self.ts_guess = None
+        request = self._request(max_steps=max_steps, n_cores=n_cores)
+        resumed_result = self._load_resume(request) if resume else None
+        was_resumed = resumed_result is not None
+
+        def result_for(
+            *,
+            status,
+            converged,
+            optimize_result=None,
+            error=None,
+        ):
+            coordinates = (
+                None
+                if self.ts_guess is None
+                else tuple(
+                    tuple(float(value) for value in atom.coord)
+                    for atom in self.ts_guess.atoms
+                )
+            )
+            return MLIPNEBResult(
+                schema_version=1,
+                status=status,
+                converged=converged,
+                resumed=was_resumed,
+                n_images=self.n_images,
+                n_cores=n_cores,
+                max_steps=max_steps,
+                method_name=self.method.name,
+                method_repr=repr(self.method),
+                method_provenance=dict(self.method_provenance),
+                optimizer_message=(
+                    None
+                    if optimize_result is None
+                    else str(getattr(optimize_result, "message", ""))
+                ),
+                optimizer_n_iterations=(
+                    None
+                    if optimize_result is None
+                    else getattr(optimize_result, "nit", None)
+                ),
+                optimizer_n_evaluations=(
+                    None
+                    if optimize_result is None
+                    else getattr(optimize_result, "nfev", None)
+                ),
+                ts_guess_coordinates=coordinates,
+                error_type=None if error is None else type(error).__name__,
+                error_message=None if error is None else str(error),
+            )
+
+        try:
+            if resumed_result is None:
+                self.mlip_path = CINEB.from_end_points(
+                    self.reactant,
+                    self.product,
+                    num=self.n_images,
+                )
+            elif resumed_result.status == "succeeded":
+                peak = self.mlip_path.peak_species
+                if peak is None:
+                    raise ValueError(
+                        "MLIP NEB successful resume checkpoint has no peak"
+                    )
+                self.ts_guess = TSguess(
+                    atoms=peak.atoms,
+                    reactant=self.reactant,
+                    product=self.product,
+                    name="mlip_neb",
+                )
+                self.last_result = resumed_result
+                return self.last_result
+
+            optimize_result = self.mlip_path.calculate(
+                method=self.method,
+                n_cores=n_cores,
+                max_n=max_steps,
+                calculation_runner=calculation_runner,
+            )
+        except Exception as error:
+            self.last_result = self._persist_result(
+                result_for(
+                    status="failed",
+                    converged=False,
+                    error=error,
+                ),
+                request,
+            )
+            raise
+
+        if not bool(optimize_result.success):
+            status = "nonconverged"
+        elif self.mlip_path.peak_species is None:
+            status = "no_peak"
+        else:
+            status = "succeeded"
+            peak = self.mlip_path.peak_species
+            self.ts_guess = TSguess(
+                atoms=peak.atoms,
+                reactant=self.reactant,
+                product=self.product,
+                name="mlip_neb",
+            )
+
+        self.last_result = self._persist_result(
+            result_for(
+                status=status,
+                converged=bool(optimize_result.success),
+                optimize_result=optimize_result,
+            ),
+            request,
+        )
+        return self.last_result
+
+    def refine_with_dft(self, *args, **kwargs):
+        """DFT refinement is deliberately outside this MLIP-only API."""
+        raise NotImplementedError(
+            "DFT refinement is disabled: MLIPAcceleratedNEB is MLIP-only"
+        )
 
     def get_ts_guess(self):
         """Get the transition state guess from MLIP NEB."""
