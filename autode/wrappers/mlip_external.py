@@ -661,19 +661,23 @@ class MLIPAcceleratedNEB:
             f".{checkpoint.stem}.{uuid.uuid4().hex}.tmp.xyz"
         )
         try:
-            for index, image in enumerate(self.mlip_path.images):
-                title = (
-                    f"autodE MLIP CINEB image {index}. "
-                    f"charge = {image.charge} mult = {image.mult} "
-                )
-                if image.energy is not None:
-                    title += f"E = {float(image.energy):.16g} "
-                image.print_xyz_file(
-                    title_line=title,
-                    filename=str(temporary),
-                    with_solvent=False,
-                    append=index > 0,
-                )
+            with temporary.open("w") as handle:
+                for index, image in enumerate(self.mlip_path.images):
+                    title = (
+                        f"autodE MLIP CINEB image {index}. "
+                        f"charge = {image.charge} mult = {image.mult} "
+                    )
+                    if image.energy is not None:
+                        title += f"E = {float(image.energy):.16g} "
+                    handle.write(f"{len(image.atoms)}\n{title}\n")
+                    for atom in image.atoms:
+                        x, y, z = (float(value) for value in atom.coord)
+                        handle.write(
+                            f"{atom.label:<3} "
+                            f"{x:.16f} {y:.16f} {z:.16f}\n"
+                        )
+                handle.flush()
+                os.fsync(handle.fileno())
             os.replace(temporary, checkpoint)
         finally:
             if temporary.exists():

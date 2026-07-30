@@ -575,7 +575,9 @@ def test_checkpoint_round_trips_through_native_cineb(
     endpoints, tmp_path
 ):
     neb = _configured_neb(endpoints, tmp_path)
-    neb.mlip_path = CINEB.from_list(_checkpoint_images())
+    images = _checkpoint_images()
+    images[2].atoms[1].coord[0] = 1.012345678901234
+    neb.mlip_path = CINEB.from_list(images)
 
     checkpoint_path, checkpoint_sha256 = (
         neb._atomic_write_checkpoint()
@@ -585,6 +587,10 @@ def test_checkpoint_round_trips_through_native_cineb(
     assert len(loaded.images) == 5
     assert [float(image.energy) for image in loaded.images] == pytest.approx(
         [0.0, 0.2, 0.4, 0.3, 0.1]
+    )
+    assert loaded.images[2].atoms[1].coord[0] == pytest.approx(
+        1.012345678901234,
+        abs=1e-12,
     )
     assert checkpoint_sha256 == hashlib.sha256(
         (tmp_path / "mlip-neb-checkpoint.xyz").read_bytes()
