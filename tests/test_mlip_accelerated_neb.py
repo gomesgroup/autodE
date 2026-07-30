@@ -82,6 +82,54 @@ def test_mlip_neb_requires_at_least_three_images(endpoints, tmp_path):
         )
 
 
+@pytest.mark.parametrize(
+    ("product", "message"),
+    [
+        (
+            Molecule(
+                atoms=[Atom("Cl"), Atom("H", x=1.0)],
+                charge=0,
+                mult=1,
+            ),
+            "ordered atom labels",
+        ),
+        (
+            Molecule(
+                atoms=[Atom("H"), Atom("Cl", x=1.0)],
+                charge=1,
+                mult=1,
+            ),
+            "charge",
+        ),
+        (
+            Molecule(
+                atoms=[Atom("H"), Atom("Cl", x=1.0)],
+                charge=0,
+                mult=2,
+            ),
+            "multiplicity",
+        ),
+    ],
+)
+def test_mlip_neb_requires_identical_ordered_endpoint_identity(
+    product, message, tmp_path
+):
+    reactant = Molecule(
+        atoms=[Atom("H"), Atom("Cl", x=1.2)],
+        charge=0,
+        mult=1,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        MLIPAcceleratedNEB(
+            reactant,
+            product,
+            method=XTB(),
+            method_provenance={"model_identity": "test"},
+            result_dir=tmp_path,
+        )
+
+
 def test_mlip_neb_stores_explicit_method_and_provenance(endpoints, tmp_path):
     reactant, product = endpoints
     method = XTB()
@@ -203,11 +251,15 @@ def test_run_mlip_neb_uses_native_cineb_and_explicit_runner(
     )
     _replace_cineb_constructor(monkeypatch, endpoints, fake_cineb)
     neb = _configured_neb(endpoints, tmp_path)
+    neb.method_provenance["scientific_settings"] = {
+        "gradient_unit": "Ha/Ang"
+    }
     calculation_runner = object()
 
     result = neb.run_mlip_neb(
         max_steps=123,
         n_cores=4,
+        image_workers=1,
         calculation_runner=calculation_runner,
         resume=False,
     )
@@ -217,6 +269,8 @@ def test_run_mlip_neb_uses_native_cineb_and_explicit_runner(
         "n_cores": 4,
         "max_n": 123,
         "calculation_runner": calculation_runner,
+        "image_workers": 1,
+        "calculation_cores": 4,
     }
     assert neb.mlip_path is fake_cineb
     assert result.status == "succeeded"
@@ -226,8 +280,13 @@ def test_run_mlip_neb_uses_native_cineb_and_explicit_runner(
     assert result.optimizer_n_evaluations == 19
     assert result.n_images == 5
     assert result.n_cores == 4
+    assert result.image_workers == 1
     assert result.max_steps == 123
     assert result.method_provenance["model_identity"] == "UMA Small v1.2"
+    result.method_provenance["scientific_settings"]["gradient_unit"] = "bad"
+    assert neb.method_provenance["scientific_settings"] == {
+        "gradient_unit": "Ha/Ang"
+    }
     assert neb.get_ts_guess() is not None
     assert neb.get_ts_guess().coordinates.tolist() == peak.coordinates.tolist()
 
@@ -367,6 +426,8 @@ def test_run_persists_atomic_provenance_and_checkpoint(
         resume=False,
     )
 
+    assert "image_workers" not in fake_cineb.calculate_kwargs
+    assert "calculation_cores" not in fake_cineb.calculate_kwargs
     receipt_path = tmp_path / "mlip-neb-result.json"
     checkpoint_path = tmp_path / "mlip-neb-checkpoint.xyz"
     assert receipt_path.is_file()

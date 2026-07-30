@@ -488,6 +488,7 @@ class MLIPNEBResult:
     resumed: bool
     n_images: int
     n_cores: int
+    image_workers: int
     max_steps: int
     method_name: str
     method_repr: str
@@ -495,6 +496,7 @@ class MLIPNEBResult:
     optimizer_message: Optional[str] = None
     optimizer_n_iterations: Optional[int] = None
     optimizer_n_evaluations: Optional[int] = None
+    optimizer_pass_results: Tuple[Dict[str, Any], ...] = ()
     checkpoint_path: Optional[str] = None
     checkpoint_sha256: Optional[str] = None
     ts_guess_coordinates: Optional[
@@ -544,8 +546,16 @@ class MLIPAcceleratedNEB:
             raise TypeError("n_images must be an integer")
         if n_images < 3:
             raise ValueError("MLIP NEB requires at least three images")
-        if reactant.sorted_atomic_symbols != product.sorted_atomic_symbols:
-            raise ValueError("MLIP NEB endpoints contain different atoms")
+        if tuple(atom.label for atom in reactant.atoms) != tuple(
+            atom.label for atom in product.atoms
+        ):
+            raise ValueError(
+                "MLIP NEB endpoints require identical ordered atom labels"
+            )
+        if reactant.charge != product.charge:
+            raise ValueError("MLIP NEB endpoint charge differs")
+        if reactant.mult != product.mult:
+            raise ValueError("MLIP NEB endpoint multiplicity differs")
         if not isinstance(method_provenance, Mapping) or not method_provenance:
             raise ValueError("method provenance must be a non-empty mapping")
         try:
@@ -611,7 +621,9 @@ class MLIPAcceleratedNEB:
             }
         )
 
-    def _request(self, *, max_steps: int, n_cores: int) -> Dict[str, Any]:
+    def _request(
+        self, *, max_steps: int, n_cores: int, image_workers: int
+    ) -> Dict[str, Any]:
         method_type = type(self.method)
         return {
             "reactant_sha256": self._endpoint_sha256(self.reactant),
@@ -619,6 +631,7 @@ class MLIPAcceleratedNEB:
             "n_images": self.n_images,
             "max_steps": max_steps,
             "n_cores": n_cores,
+            "image_workers": image_workers,
             "method": {
                 "class": (
                     f"{method_type.__module__}.{method_type.__qualname__}"
@@ -755,6 +768,7 @@ class MLIPAcceleratedNEB:
         self,
         max_steps: int = 200,
         n_cores: int = 1,
+        image_workers: Optional[int] = None,
         calculation_runner=None,
         resume: bool = True,
     ) -> MLIPNEBResult:
@@ -770,12 +784,25 @@ class MLIPAcceleratedNEB:
             raise TypeError("n_cores must be an integer")
         if n_cores < 1:
             raise ValueError("n_cores must be positive")
+        explicitly_separated_resources = image_workers is not None
+        if image_workers is None:
+            image_workers = n_cores
+        if not isinstance(image_workers, int) or isinstance(
+            image_workers, bool
+        ):
+            raise TypeError("image_workers must be an integer")
+        if image_workers < 1:
+            raise ValueError("image_workers must be positive")
 
         logger.info(
             f"Running explicit MLIP CINEB with {self.n_images} images"
         )
         self.ts_guess = None
-        request = self._request(max_steps=max_steps, n_cores=n_cores)
+        request = self._request(
+            max_steps=max_steps,
+            n_cores=n_cores,
+            image_workers=image_workers,
+        )
         resumed_result = self._load_resume(request) if resume else None
         was_resumed = resumed_result is not None
 
@@ -801,10 +828,18 @@ class MLIPAcceleratedNEB:
                 resumed=was_resumed,
                 n_images=self.n_images,
                 n_cores=n_cores,
+                image_workers=image_workers,
                 max_steps=max_steps,
                 method_name=self.method.name,
                 method_repr=repr(self.method),
-                method_provenance=dict(self.method_provenance),
+                method_provenance=json.loads(
+                    json.dumps(
+                        self.method_provenance,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                ),
                 optimizer_message=(
                     None
                     if optimize_result is None
@@ -818,7 +853,23 @@ class MLIPAcceleratedNEB:
                 optimizer_n_evaluations=(
                     None
                     if optimize_result is None
-                    else getattr(optimize_result, "nfev", None)
+                    else getattr(
+                        optimize_result,
+                        "cineb_total_nfev",
+                        getattr(optimize_result, "nfev", None),
+                    )
+                ),
+                optimizer_pass_results=(
+                    ()
+                    if optimize_result is None
+                    else tuple(
+                        dict(pass_result)
+                        for pass_result in getattr(
+                            optimize_result,
+                            "cineb_pass_results",
+                            (),
+                        )
+                    )
                 ),
                 ts_guess_coordinates=coordinates,
                 error_type=None if error is None else type(error).__name__,
@@ -847,12 +898,18 @@ class MLIPAcceleratedNEB:
                 self.last_result = resumed_result
                 return self.last_result
 
-            optimize_result = self.mlip_path.calculate(
+            calculate_kwargs = dict(
                 method=self.method,
                 n_cores=n_cores,
                 max_n=max_steps,
                 calculation_runner=calculation_runner,
             )
+            if explicitly_separated_resources:
+                calculate_kwargs.update(
+                    image_workers=image_workers,
+                    calculation_cores=n_cores,
+                )
+            optimize_result = self.mlip_path.calculate(**calculate_kwargs)
         except Exception as error:
             self.last_result = self._persist_result(
                 result_for(

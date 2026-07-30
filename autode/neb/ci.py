@@ -111,34 +111,68 @@ class CINEB(NEB):
         etol,
         max_n=30,
         calculation_runner=None,
+        image_workers=None,
+        calculation_cores=None,
     ) -> OptimizeResult:
-        """Minimise the energy of every image in the NEB"""
+        """Minimise the NEB within one total evaluation budget."""
         logger.info(f"Minimising to ∆E < {etol:.4f} Ha on all NEB coordinates")
-        result = super()._minimise(
+
+        def summary(result, pass_name):
+            return {
+                "pass": pass_name,
+                "success": bool(getattr(result, "success", False)),
+                "message": str(getattr(result, "message", "")),
+                "nit": int(getattr(result, "nit", 0)),
+                "nfev": int(getattr(result, "nfev", 0)),
+            }
+
+        def record(result, pass_results):
+            result.cineb_pass_results = tuple(pass_results)
+            result.cineb_total_nfev = sum(
+                item["nfev"] for item in pass_results
+            )
+            return result
+
+        first_result = super()._minimise(
             method,
             n_cores,
             etol,
             max_n,
             calculation_runner=calculation_runner,
+            image_workers=image_workers,
+            calculation_cores=calculation_cores,
         )
+        pass_results = [summary(first_result, "elastic_band")]
 
         if any(
             im.iteration > self.images.wait_iteration for im in self.images
         ):
-            return result
+            return record(first_result, pass_results)
 
         logger.info(
             "Converged before CI was turned on. Reducing the wait and "
             "minimising again"
         )
 
+        remaining = max_n - pass_results[0]["nfev"]
+        if remaining <= 0:
+            first_result.success = False
+            first_result.message = (
+                f"{first_result.message}; total evaluation budget exhausted "
+                "before climbing-image pass"
+            )
+            return record(first_result, pass_results)
+
         self.images.wait_iteration = max(im.iteration for im in self.images)
         result = super()._minimise(
             method,
             n_cores,
             etol,
-            max_n,
+            remaining,
             calculation_runner=calculation_runner,
+            image_workers=image_workers,
+            calculation_cores=calculation_cores,
         )
+        pass_results.append(summary(result, "climbing_image"))
 
-        return result
+        return record(result, pass_results)

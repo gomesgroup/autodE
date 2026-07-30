@@ -2,8 +2,10 @@ import shutil
 import os
 import numpy as np
 import pytest
+from scipy.optimize import OptimizeResult
 from autode.path import Path
 from autode.neb import NEB
+import autode.neb.original as original_neb
 from autode.values import Distance, ForceConstant
 from autode.neb.ci import CINEB, Images, CImages, Image
 from autode.neb.idpp import IDPP
@@ -238,7 +240,12 @@ def test_cineb_minimise_forwards_injected_calculation_runner(monkeypatch):
         image.iteration = cineb.images.wait_iteration + 1
     calculation_runner = object()
     seen_runners = []
-    expected_result = object()
+    expected_result = OptimizeResult(
+        success=True,
+        message="converged",
+        nit=1,
+        nfev=2,
+    )
 
     def fake_minimise(
         self,
@@ -247,6 +254,8 @@ def test_cineb_minimise_forwards_injected_calculation_runner(monkeypatch):
         etol,
         max_n=30,
         calculation_runner=None,
+        image_workers=None,
+        calculation_cores=None,
     ):
         seen_runners.append(calculation_runner)
         return expected_result
@@ -263,6 +272,133 @@ def test_cineb_minimise_forwards_injected_calculation_runner(monkeypatch):
 
     assert result is expected_result
     assert seen_runners == [calculation_runner]
+
+
+def test_total_energy_separates_image_workers_from_calculation_cores(
+    monkeypatch,
+):
+    images = _simple_h2_images(num=5, shift=0.5, increment=0.1)
+    for image in (images[0], images[-1]):
+        image.energy = 0.0
+        image.gradient = np.zeros((2, 3))
+
+    observed_workers = []
+    observed_calculation_cores = []
+
+    class ImmediateResult:
+        def __init__(self, value):
+            self._value = value
+
+        def result(self):
+            return self._value
+
+    class ImmediatePool:
+        def __init__(self, max_workers):
+            observed_workers.append(max_workers)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def submit(
+            self,
+            function,
+            image,
+            method,
+            n_cores,
+            calculation_runner,
+        ):
+            observed_calculation_cores.append(n_cores)
+            image.energy = float(image.iteration + 1)
+            image.gradient = np.zeros((2, 3))
+            return ImmediateResult(image)
+
+    monkeypatch.setattr(original_neb, "ProcessPool", ImmediatePool)
+
+    original_neb.total_energy(
+        images.coords(),
+        images,
+        ORCA(),
+        n_cores=4,
+        plot_energies=False,
+        image_workers=1,
+        calculation_cores=4,
+    )
+
+    assert observed_workers == [1]
+    assert observed_calculation_cores == [4, 4, 4]
+
+
+def test_cineb_uses_one_total_evaluation_budget_across_both_passes(
+    monkeypatch,
+):
+    cineb = CINEB.from_list(
+        [
+            Molecule(atoms=[Atom("H")], mult=2),
+            Molecule(atoms=[Atom("H", x=1.0)], mult=2),
+            Molecule(atoms=[Atom("H", x=2.0)], mult=2),
+        ]
+    )
+    observed_budgets = []
+    pass_results = [
+        OptimizeResult(
+            success=True,
+            message="elastic band converged",
+            nit=4,
+            nfev=7,
+        ),
+        OptimizeResult(
+            success=True,
+            message="climbing image converged",
+            nit=2,
+            nfev=3,
+        ),
+    ]
+
+    def fake_minimise(
+        self,
+        method,
+        n_cores,
+        etol,
+        max_n=30,
+        calculation_runner=None,
+        image_workers=None,
+        calculation_cores=None,
+    ):
+        observed_budgets.append(max_n)
+        return pass_results[len(observed_budgets) - 1]
+
+    monkeypatch.setattr(NEB, "_minimise", fake_minimise)
+
+    result = cineb._minimise(
+        method=XTB(),
+        n_cores=4,
+        etol=0.01,
+        max_n=10,
+        image_workers=1,
+        calculation_cores=4,
+    )
+
+    assert observed_budgets == [10, 3]
+    assert result.cineb_total_nfev == 10
+    assert result.cineb_pass_results == (
+        {
+            "pass": "elastic_band",
+            "success": True,
+            "message": "elastic band converged",
+            "nit": 4,
+            "nfev": 7,
+        },
+        {
+            "pass": "climbing_image",
+            "success": True,
+            "message": "climbing image converged",
+            "nit": 2,
+            "nfev": 3,
+        },
+    )
 
 
 def test_iddp_init():

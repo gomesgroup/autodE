@@ -114,19 +114,25 @@ def total_energy(
     n_cores,
     plot_energies,
     calculation_runner=None,
+    image_workers=None,
+    calculation_cores=None,
 ):
     """Compute the total energy across all images"""
     images.set_coords(flat_coords)
 
-    # Number of cores per process is the floored total divided by n images
-    # minus the two end points that will be fixed
-    n_cores_pp = 1
-    if len(images) > 2:
-        n_cores_pp = max(int(n_cores // (len(images) - 2)), 1)
+    worker_count = n_cores if image_workers is None else image_workers
+    if calculation_cores is None:
+        # Preserve the historical API: n_cores is a total allocation split
+        # over the non-endpoint images.
+        n_cores_pp = 1
+        if len(images) > 2:
+            n_cores_pp = max(int(n_cores // (len(images) - 2)), 1)
+    else:
+        n_cores_pp = calculation_cores
 
     logger.info(
         f"Calculating energy and forces for all images with "
-        f"{n_cores} total cores and {n_cores_pp} per process"
+        f"{worker_count} image workers and {n_cores_pp} cores per calculation"
     )
 
     # Run an energy + gradient evaluation across all images. IDPP and in-memory
@@ -148,7 +154,7 @@ def total_energy(
             for i in range(1, len(images) - 1)
         ]
     else:
-        with ProcessPool(max_workers=n_cores) as pool:
+        with ProcessPool(max_workers=worker_count) as pool:
             results = [
                 pool.submit(
                     energy_gradient,
@@ -181,6 +187,8 @@ def derivative(
     n_cores,
     plot_energies,
     calculation_runner=None,
+    image_workers=None,
+    calculation_cores=None,
 ):
     """
     Compute the derivative of the total energy with respect to all
@@ -599,6 +607,8 @@ class NEB:
         etol,
         max_n=30,
         calculation_runner=None,
+        image_workers=None,
+        calculation_cores=None,
     ) -> Any:
         """Minimise the energy of every image in the NEB"""
         logger.info(f"Minimising to ∆E < {etol:.4f} Ha on all NEB coordinates")
@@ -614,6 +624,8 @@ class NEB:
                 n_cores,
                 True,
                 calculation_runner,
+                image_workers,
+                calculation_cores,
             ),
             tol=etol,
             options={"maxfun": max_n},
@@ -730,6 +742,8 @@ class NEB:
         calculation_runner: Optional[
             Callable[[Calculation], Any]
         ] = None,
+        image_workers: Optional[int] = None,
+        calculation_cores: Optional[int] = None,
     ) -> Any:
         """
         Optimise the NEB using forces calculated from electronic structure
@@ -752,17 +766,33 @@ class NEB:
             calculation_runner: Optional callable used to run every explicit
                                 electronic-structure ``Calculation``. Defaults
                                 to ``Calculation.run``.
+
+            image_workers: Optional number of concurrent image evaluations.
+                           If omitted, preserves the historical ``n_cores``
+                           worker count.
+
+            calculation_cores: Optional cores assigned to each image
+                               calculation. If omitted, preserves the
+                               historical core-sharing behaviour.
         """
         import matplotlib.pyplot as plt
+
+        if image_workers is not None and image_workers < 1:
+            raise ValueError("image_workers must be positive")
+        if calculation_cores is not None and calculation_cores < 1:
+            raise ValueError("calculation_cores must be positive")
 
         self.print_geometries(name=f"{name_prefix}neb_init")
 
         # Calculate energy on the first and final points as these will not be recalc-ed
+        endpoint_cores = (
+            n_cores if calculation_cores is None else calculation_cores
+        )
         for idx in [0, -1]:
             energy_gradient(
                 self.images[idx],
                 method=method,
-                n_cores=n_cores,
+                n_cores=endpoint_cores,
                 calculation_runner=calculation_runner,
             )
 
@@ -777,6 +807,8 @@ class NEB:
             etol=etol_per_image * len(self.images),
             max_n=max_n,
             calculation_runner=calculation_runner,
+            image_workers=image_workers,
+            calculation_cores=calculation_cores,
         )
 
         # Set the optimised coordinates for all the images
