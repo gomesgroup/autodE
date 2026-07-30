@@ -246,6 +246,15 @@ def test_run_mlip_neb_uses_native_cineb_and_explicit_runner(
             message="converged",
             nit=7,
             nfev=19,
+            cineb_total_nfev=19,
+            cineb_pass_results=(
+                {
+                    "pass": "climbing_image",
+                    "success": True,
+                    "nfev": 19,
+                    "metrics": {"remaining_budget": 104},
+                },
+            ),
         ),
         images=_checkpoint_images(),
     )
@@ -283,9 +292,26 @@ def test_run_mlip_neb_uses_native_cineb_and_explicit_runner(
     assert result.image_workers == 1
     assert result.max_steps == 123
     assert result.method_provenance["model_identity"] == "UMA Small v1.2"
-    result.method_provenance["scientific_settings"]["gradient_unit"] = "bad"
-    assert neb.method_provenance["scientific_settings"] == {
+    with pytest.raises(TypeError):
+        result.method_provenance["model_identity"] = "changed"
+    with pytest.raises(TypeError):
+        result.method_provenance["scientific_settings"][
+            "gradient_unit"
+        ] = "bad"
+    with pytest.raises(TypeError):
+        result.optimizer_pass_results[0]["nfev"] = 20
+    with pytest.raises(TypeError):
+        result.optimizer_pass_results[0]["metrics"][
+            "remaining_budget"
+        ] = 0
+    persisted = json.loads(
+        (tmp_path / "mlip-neb-result.json").read_text()
+    )
+    assert persisted["method_provenance"]["scientific_settings"] == {
         "gradient_unit": "Ha/Ang"
+    }
+    assert persisted["optimizer_pass_results"][0]["metrics"] == {
+        "remaining_budget": 104
     }
     assert neb.get_ts_guess() is not None
     assert neb.get_ts_guess().coordinates.tolist() == peak.coordinates.tolist()
@@ -502,6 +528,8 @@ def test_successful_matching_result_resumes_without_recalculation(
 
     assert result.status == "succeeded"
     assert result.resumed is True
+    with pytest.raises(TypeError):
+        result.method_provenance["model_identity"] = "changed"
     assert resumed_path.calculate_kwargs is None
     assert neb.mlip_path is resumed_path
     assert neb.get_ts_guess() is not None

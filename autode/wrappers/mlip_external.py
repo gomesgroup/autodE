@@ -16,12 +16,13 @@ Reference:
 """
 
 from typing import List, Tuple, Optional, Dict, Any, Mapping
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 import hashlib
 import os
 import subprocess
 import json
 from pathlib import Path as FilePath
+from types import MappingProxyType
 import uuid
 
 from autode.wrappers.keywords.orca6 import (
@@ -478,6 +479,34 @@ def mlip_preoptimize(
     return Molecule(atoms=new_atoms, charge=molecule.charge, mult=molecule.mult)
 
 
+def _deeply_immutable_json(value):
+    """Recursively freeze JSON-compatible containers."""
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {
+                key: _deeply_immutable_json(item)
+                for key, item in value.items()
+            }
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_deeply_immutable_json(item) for item in value)
+    return value
+
+
+def _jsonable(value):
+    """Return plain JSON containers, including for immutable result data."""
+    if is_dataclass(value):
+        return {
+            item.name: _jsonable(getattr(value, item.name))
+            for item in fields(value)
+        }
+    if isinstance(value, Mapping):
+        return {key: _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return value
+
+
 @dataclass(frozen=True)
 class MLIPNEBResult:
     """Serializable outcome of an explicitly configured MLIP-only CINEB."""
@@ -492,11 +521,11 @@ class MLIPNEBResult:
     max_steps: int
     method_name: str
     method_repr: str
-    method_provenance: Dict[str, Any]
+    method_provenance: Mapping[str, Any]
     optimizer_message: Optional[str] = None
     optimizer_n_iterations: Optional[int] = None
     optimizer_n_evaluations: Optional[int] = None
-    optimizer_pass_results: Tuple[Dict[str, Any], ...] = ()
+    optimizer_pass_results: Tuple[Mapping[str, Any], ...] = ()
     checkpoint_path: Optional[str] = None
     checkpoint_sha256: Optional[str] = None
     ts_guess_coordinates: Optional[
@@ -504,6 +533,21 @@ class MLIPNEBResult:
     ] = None
     error_type: Optional[str] = None
     error_message: Optional[str] = None
+
+    def __post_init__(self):
+        object.__setattr__(
+            self,
+            "method_provenance",
+            _deeply_immutable_json(self.method_provenance),
+        )
+        object.__setattr__(
+            self,
+            "optimizer_pass_results",
+            tuple(
+                _deeply_immutable_json(pass_result)
+                for pass_result in self.optimizer_pass_results
+            ),
+        )
 
 
 class MLIPAcceleratedNEB:
@@ -712,7 +756,7 @@ class MLIPAcceleratedNEB:
             checkpoint_path=checkpoint_path,
             checkpoint_sha256=checkpoint_sha256,
         )
-        payload = asdict(persisted)
+        payload = _jsonable(persisted)
         payload["request"] = dict(request)
         self._atomic_write_json(self._receipt_path, payload)
         return persisted
