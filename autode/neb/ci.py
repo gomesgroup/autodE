@@ -104,10 +104,23 @@ class CINEB(NEB):
 
         self.images: CImages = CImages(self.images)
 
-    def _minimise(self, method, n_cores, etol, max_n=30) -> OptimizeResult:
+    def _minimise(
+        self,
+        method,
+        n_cores,
+        etol,
+        max_n=30,
+        calculation_runner=None,
+    ) -> OptimizeResult:
         """Minimise the energy of every image in the NEB"""
         logger.info(f"Minimising to ∆E < {etol:.4f} Ha on all NEB coordinates")
-        result = super()._minimise(method, n_cores, etol, max_n)
+        result = super()._minimise(
+            method,
+            n_cores,
+            etol,
+            max_n,
+            calculation_runner=calculation_runner,
+        )
 
         if any(
             im.iteration > self.images.wait_iteration for im in self.images
@@ -120,6 +133,12 @@ class CINEB(NEB):
         )
 
         self.images.wait_iteration = max(im.iteration for im in self.images)
-        result = super()._minimise(method, n_cores, etol, max_n)
+        result = super()._minimise(
+            method,
+            n_cores,
+            etol,
+            max_n,
+            calculation_runner=calculation_runner,
+        )
 
         return result

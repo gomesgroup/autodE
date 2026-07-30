@@ -4,7 +4,16 @@ Henkelman and H. J ́onsson, J. Chem. Phys. 113, 9978 (2000)
 """
 import numpy as np
 
-from typing import Optional, Sequence, List, Any, TYPE_CHECKING, Union, Type
+from typing import (
+    Optional,
+    Sequence,
+    List,
+    Any,
+    Callable,
+    TYPE_CHECKING,
+    Union,
+    Type,
+)
 from copy import deepcopy
 
 from autode.log import logger
@@ -24,11 +33,18 @@ if TYPE_CHECKING:
     from autode.neb.ci import CImages
 
 
-def energy_gradient(image, method, n_cores):
+def energy_gradient(
+    image,
+    method,
+    n_cores,
+    calculation_runner: Optional[Callable[[Calculation], Any]] = None,
+):
     """Calculate energies and gradients for an image using a EST method"""
 
     if isinstance(method, Method):
-        return _est_energy_gradient(image, method, n_cores)
+        return _est_energy_gradient(
+            image, method, n_cores, calculation_runner=calculation_runner
+        )
 
     elif isinstance(method, IDPP):
         return _idpp_energy_gradient(image, method, n_cores)
@@ -39,7 +55,12 @@ def energy_gradient(image, method, n_cores):
     )
 
 
-def _est_energy_gradient(image, est_method, n_cores):
+def _est_energy_gradient(
+    image,
+    est_method,
+    n_cores,
+    calculation_runner: Optional[Callable[[Calculation], Any]] = None,
+):
     """Electronic structure energy and gradint"""
     calc = Calculation(
         name=f"{image.name}_{image.iteration}",
@@ -51,7 +72,10 @@ def _est_energy_gradient(image, est_method, n_cores):
 
     @work_in(image.name)
     def run():
-        calc.run()
+        if calculation_runner is None:
+            calc.run()
+        else:
+            calculation_runner(calc)
 
     run()
     return image
@@ -83,7 +107,14 @@ def _idpp_energy_gradient(
     return image
 
 
-def total_energy(flat_coords, images, method, n_cores, plot_energies):
+def total_energy(
+    flat_coords,
+    images,
+    method,
+    n_cores,
+    plot_energies,
+    calculation_runner=None,
+):
     """Compute the total energy across all images"""
     images.set_coords(flat_coords)
 
@@ -108,13 +139,24 @@ def total_energy(flat_coords, images, method, n_cores, plot_energies):
     )
     if in_process:
         images[1:-1] = [
-            energy_gradient(images[i], method, n_cores_pp)
+            energy_gradient(
+                images[i],
+                method,
+                n_cores_pp,
+                calculation_runner=calculation_runner,
+            )
             for i in range(1, len(images) - 1)
         ]
     else:
         with ProcessPool(max_workers=n_cores) as pool:
             results = [
-                pool.submit(energy_gradient, images[i], method, n_cores_pp)
+                pool.submit(
+                    energy_gradient,
+                    images[i],
+                    method,
+                    n_cores_pp,
+                    calculation_runner,
+                )
                 for i in range(1, len(images) - 1)
             ]
 
@@ -132,7 +174,14 @@ def total_energy(flat_coords, images, method, n_cores, plot_energies):
     return sum(rel_energies)
 
 
-def derivative(flat_coords, images, method, n_cores, plot_energies):
+def derivative(
+    flat_coords,
+    images,
+    method,
+    n_cores,
+    plot_energies,
+    calculation_runner=None,
+):
     """
     Compute the derivative of the total energy with respect to all
     components. Several arguments are unused as SciPy requires the jacobian
@@ -543,7 +592,14 @@ class NEB:
 
         return neb
 
-    def _minimise(self, method, n_cores, etol, max_n=30) -> Any:
+    def _minimise(
+        self,
+        method,
+        n_cores,
+        etol,
+        max_n=30,
+        calculation_runner=None,
+    ) -> Any:
         """Minimise the energy of every image in the NEB"""
         logger.info(f"Minimising to ∆E < {etol:.4f} Ha on all NEB coordinates")
 
@@ -552,7 +608,13 @@ class NEB:
             x0=self.images.coords(),
             method="L-BFGS-B",
             jac=derivative,
-            args=(self.images, method, n_cores, True),
+            args=(
+                self.images,
+                method,
+                n_cores,
+                True,
+                calculation_runner,
+            ),
             tol=etol,
             options={"maxfun": max_n},
         )
@@ -664,7 +726,11 @@ class NEB:
         etol_per_image: Union[float, PotentialEnergy] = PotentialEnergy(
             0.6, units="kcal mol-1"
         ),
-    ) -> None:
+        max_n: int = 30,
+        calculation_runner: Optional[
+            Callable[[Calculation], Any]
+        ] = None,
+    ) -> Any:
         """
         Optimise the NEB using forces calculated from electronic structure
 
@@ -680,6 +746,12 @@ class NEB:
 
             etol_per_image: Energy tolerance per image to use in the L-BFGS-B
                             minimisation
+
+            max_n: Maximum number of energy/gradient evaluations
+
+            calculation_runner: Optional callable used to run every explicit
+                                electronic-structure ``Calculation``. Defaults
+                                to ``Calculation.run``.
         """
         import matplotlib.pyplot as plt
 
@@ -687,7 +759,12 @@ class NEB:
 
         # Calculate energy on the first and final points as these will not be recalc-ed
         for idx in [0, -1]:
-            energy_gradient(self.images[idx], method=method, n_cores=n_cores)
+            energy_gradient(
+                self.images[idx],
+                method=method,
+                n_cores=n_cores,
+                calculation_runner=calculation_runner,
+            )
 
         if isinstance(etol_per_image, PotentialEnergy):
             etol_per_image = float(
@@ -695,7 +772,11 @@ class NEB:
             )  # use float for scipy
 
         result = self._minimise(
-            method, n_cores, etol=etol_per_image * len(self.images)
+            method,
+            n_cores,
+            etol=etol_per_image * len(self.images),
+            max_n=max_n,
+            calculation_runner=calculation_runner,
         )
 
         # Set the optimised coordinates for all the images
@@ -705,7 +786,7 @@ class NEB:
         # and save the plot
         plt.savefig(f"{name_prefix}neb_optimised.pdf")
         plt.close()
-        return None
+        return result
 
     @property
     def peak_species(self) -> Optional[Species]:

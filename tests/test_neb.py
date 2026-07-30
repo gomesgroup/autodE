@@ -5,7 +5,7 @@ import pytest
 from autode.path import Path
 from autode.neb import NEB
 from autode.values import Distance, ForceConstant
-from autode.neb.ci import Images, CImages, Image
+from autode.neb.ci import CINEB, Images, CImages, Image
 from autode.neb.idpp import IDPP
 from autode.species.molecule import Species, Molecule
 from autode.species.molecule import Reactant
@@ -194,6 +194,75 @@ def test_energy_gradient_type():
     # Energy and gradient must have a method (EST or IDPP)
     with pytest.raises(ValueError):
         _ = energy_gradient(image=image, method=None, n_cores=1)
+
+
+def test_energy_gradient_uses_injected_calculation_runner():
+    image = Image(
+        species=Molecule(atoms=[Atom("H")], mult=2),
+        name="runner_image",
+        k=ForceConstant(1.0),
+    )
+    method = XTB()
+    seen_calculations = []
+
+    def runner(calculation):
+        seen_calculations.append(calculation)
+        calculation.molecule.energy = 1.25
+        calculation.molecule.gradient = np.array([[0.1, 0.2, 0.3]])
+
+    result = energy_gradient(
+        image=image,
+        method=method,
+        n_cores=3,
+        calculation_runner=runner,
+    )
+
+    assert result is image
+    assert len(seen_calculations) == 1
+    assert seen_calculations[0].method is method
+    assert seen_calculations[0].input.keywords == method.keywords.grad
+    assert seen_calculations[0].n_cores == 3
+    assert np.isclose(float(image.energy), 1.25)
+    assert np.allclose(image.gradient, [0.1, 0.2, 0.3])
+
+
+def test_cineb_minimise_forwards_injected_calculation_runner(monkeypatch):
+    cineb = CINEB.from_list(
+        [
+            Molecule(atoms=[Atom("H")], mult=2),
+            Molecule(atoms=[Atom("H", x=1.0)], mult=2),
+            Molecule(atoms=[Atom("H", x=2.0)], mult=2),
+        ]
+    )
+    for image in cineb.images:
+        image.iteration = cineb.images.wait_iteration + 1
+    calculation_runner = object()
+    seen_runners = []
+    expected_result = object()
+
+    def fake_minimise(
+        self,
+        method,
+        n_cores,
+        etol,
+        max_n=30,
+        calculation_runner=None,
+    ):
+        seen_runners.append(calculation_runner)
+        return expected_result
+
+    monkeypatch.setattr(NEB, "_minimise", fake_minimise)
+
+    result = cineb._minimise(
+        method=XTB(),
+        n_cores=2,
+        etol=0.01,
+        max_n=17,
+        calculation_runner=calculation_runner,
+    )
+
+    assert result is expected_result
+    assert seen_runners == [calculation_runner]
 
 
 def test_iddp_init():
