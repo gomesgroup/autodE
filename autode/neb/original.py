@@ -135,13 +135,17 @@ def total_energy(
         f"{worker_count} image workers and {n_cores_pp} cores per calculation"
     )
 
-    # Run an energy + gradient evaluation across all images. IDPP and in-memory
-    # methods are evaluated serially in this process; in particular GPU4PySCF
-    # holds a CUDA context that cannot survive process forking, so it must not
-    # be dispatched to a ProcessPool. Only external-program methods (ORCA, etc.,
-    # uses_external_io=True) are parallelised across images.
-    in_process = isinstance(method, IDPP) or not getattr(
-        method, "uses_external_io", True
+    # Run an energy + gradient evaluation across all images. A single image
+    # worker is deliberately serial: constructing a one-process pool adds no
+    # concurrency and unnecessarily requires the method and injected runner
+    # to be pickleable. IDPP and in-memory methods are also evaluated serially;
+    # in particular GPU4PySCF holds a CUDA context that cannot survive process
+    # forking. External-program methods are parallelised only when two or more
+    # image workers were explicitly made available.
+    in_process = (
+        worker_count == 1
+        or isinstance(method, IDPP)
+        or not getattr(method, "uses_external_io", True)
     )
     if in_process:
         images[1:-1] = [

@@ -282,40 +282,29 @@ def test_total_energy_separates_image_workers_from_calculation_cores(
         image.energy = 0.0
         image.gradient = np.zeros((2, 3))
 
-    observed_workers = []
     observed_calculation_cores = []
 
-    class ImmediateResult:
-        def __init__(self, value):
-            self._value = value
-
-        def result(self):
-            return self._value
-
-    class ImmediatePool:
+    class ForbiddenPool:
         def __init__(self, max_workers):
-            observed_workers.append(max_workers)
+            raise AssertionError(
+                "one image worker must not create a process pool"
+            )
 
-        def __enter__(self):
-            return self
+    def immediate_energy_gradient(
+        image,
+        method,
+        n_cores,
+        calculation_runner=None,
+    ):
+        observed_calculation_cores.append(n_cores)
+        image.energy = float(image.iteration + 1)
+        image.gradient = np.zeros((2, 3))
+        return image
 
-        def __exit__(self, *args):
-            return False
-
-        def submit(
-            self,
-            function,
-            image,
-            method,
-            n_cores,
-            calculation_runner,
-        ):
-            observed_calculation_cores.append(n_cores)
-            image.energy = float(image.iteration + 1)
-            image.gradient = np.zeros((2, 3))
-            return ImmediateResult(image)
-
-    monkeypatch.setattr(original_neb, "ProcessPool", ImmediatePool)
+    monkeypatch.setattr(original_neb, "ProcessPool", ForbiddenPool)
+    monkeypatch.setattr(
+        original_neb, "energy_gradient", immediate_energy_gradient
+    )
 
     original_neb.total_energy(
         images.coords(),
@@ -327,7 +316,6 @@ def test_total_energy_separates_image_workers_from_calculation_cores(
         calculation_cores=4,
     )
 
-    assert observed_workers == [1]
     assert observed_calculation_cores == [4, 4, 4]
 
 
