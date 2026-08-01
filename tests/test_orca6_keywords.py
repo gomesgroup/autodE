@@ -281,6 +281,24 @@ class TestExtOptKeywords:
         assert "%extopt" in block.lower()
         assert "cmd" in block.lower()
 
+    def test_extopt_program_and_parameters_block(self):
+        """Test argument-safe ORCA external-program keyword generation."""
+        kw = ExtOptKeywords(
+            prog_ext="/usr/local/bin/mlip_client",
+            ext_params="https://server/models aimnet2",
+        )
+        block = kw.to_orca_block()
+        assert '%method' in block.lower()
+        assert 'ProgExt "/usr/local/bin/mlip_client"' in block
+        assert 'Ext_Params "https://server/models aimnet2"' in block
+
+    def test_extopt_requires_exactly_one_command_style(self):
+        """Reject missing or ambiguous external optimizer commands."""
+        with pytest.raises(ValueError):
+            ExtOptKeywords()
+        with pytest.raises(ValueError):
+            ExtOptKeywords(prog_ext="client", command="legacy client")
+
 
 class TestKeywordIntegration:
     """Integration tests for keyword combinations."""

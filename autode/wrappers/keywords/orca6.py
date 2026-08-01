@@ -617,13 +617,27 @@ class ExtOptKeywords(ORCA6Keywords):
     ExtOpt allows ORCA to use external programs for energy/gradient
     evaluation, commonly used for MLIP integration.
 
-    Example:
+    Examples:
         >>> extopt = ExtOptKeywords(
+        ...     prog_ext="/usr/local/bin/mlip_client",
+        ...     ext_params="https://server/models aimnet2",
+        ... )
+        >>> legacy = ExtOptKeywords(
         ...     command="mlip_client http://localhost:5003 aimnet2"
         ... )
     """
 
-    def __init__(self, command: str):
+    def __init__(
+        self,
+        prog_ext: str = "",
+        ext_params: str = "",
+        command: str = "",
+    ):
+        if bool(prog_ext) == bool(command):
+            raise ValueError("Specify exactly one of prog_ext or command")
+
+        self.prog_ext = prog_ext
+        self.ext_params = ext_params
         self.command = command
         super().__init__(name="ExtOpt")
 
@@ -631,15 +645,31 @@ class ExtOptKeywords(ORCA6Keywords):
         return "ExtOpt"
 
     def to_orca_block(self) -> str:
+        if self.command:
+            return "\n".join(
+                [
+                    "%extopt",
+                    f'  CMD "{self.command}"',
+                    "end",
+                ]
+            )
+
         lines = [
-            "%extopt",
-            f'  CMD "{self.command}"',
-            "end",
+            "%method",
+            f'  ProgExt "{self.prog_ext}"',
         ]
+        if self.ext_params:
+            lines.append(f'  Ext_Params "{self.ext_params}"')
+        lines.append("end")
         return "\n".join(lines)
 
     def __repr__(self) -> str:
-        return f"ExtOptKeywords(command='{self.command}')"
+        if self.command:
+            return f"ExtOptKeywords(command='{self.command}')"
+        return (
+            f"ExtOptKeywords(prog_ext='{self.prog_ext}', "
+            f"ext_params='{self.ext_params}')"
+        )
 
 
 # ============================================================================
