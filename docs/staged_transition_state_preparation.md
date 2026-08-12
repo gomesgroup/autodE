@@ -14,6 +14,9 @@ every autoDE `Calculation` before execution, allowing a project to inject and
 audit engine-specific controls, preserve provenance, or route calculations to
 a remote potential.
 
+Each stage receipt records whether the underlying optimizer converged, so a
+bounded preparation stop remains distinguishable from an execution failure.
+
 ```python
 from autode.transition_states import StagedTSPreparation
 

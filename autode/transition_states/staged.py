@@ -44,6 +44,7 @@ class StagedTSReceipt:
     fixed_atom_indices: Tuple[int, ...]
     distance_constraints: Tuple[Tuple[int, int, float], ...]
     energy_hartree: Optional[float]
+    converged: Optional[bool]
 
 
 @dataclass(frozen=True)
@@ -159,6 +160,10 @@ class StagedTSPreparation:
                 )
             )
         energy = molecule.energy
+        try:
+            converged = bool(calc.optimiser.converged)
+        except (AttributeError, RuntimeError, ValueError):
+            converged = None
         return StagedTSReceipt(
             stage=stage,
             calculation_name=calc.name,
@@ -167,6 +172,7 @@ class StagedTSPreparation:
             fixed_atom_indices=tuple(fixed_atoms),
             distance_constraints=constrained_distances,
             energy_hartree=None if energy is None else float(energy),
+            converged=converged,
         )
 
     def run(self, ts_guess: "TSguess") -> StagedTSResult:
