@@ -16,6 +16,10 @@ a remote potential.
 
 Each stage receipt records whether the underlying optimizer converged, so a
 bounded preparation stop remains distinguishable from an execution failure.
+The three conditioning stages may intentionally reach their iteration limits.
+By default the final unconstrained `full_optts` stage must converge; otherwise
+`StagedTSPreparationError` is raised and no candidate is returned. Projects
+can tighten this policy explicitly with `required_converged_stages`.
 
 ```python
 from autode.transition_states import StagedTSPreparation
@@ -36,6 +40,10 @@ methods can also be supplied directly:
 
 ```python
 reaction.locate_transition_state(
+    hmethod=explicit_method,
+    lmethod=explicit_method,
+)
+reaction.find_lowest_energy_ts_conformer(
     hmethod=explicit_method,
     lmethod=explicit_method,
 )

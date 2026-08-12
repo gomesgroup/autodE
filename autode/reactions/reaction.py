@@ -709,14 +709,20 @@ class Reaction:
 
     @checkpoint_rxn_profile_step("transition_state_conformers")
     @work_in("transition_states")
-    def find_lowest_energy_ts_conformer(self) -> None:
-        """Find the lowest energy conformer of the transition state"""
+    def find_lowest_energy_ts_conformer(
+        self,
+        hmethod: Optional["Method"] = None,
+        lmethod: Optional["Method"] = None,
+    ) -> None:
+        """Find the lowest-energy TS conformer with exact method injection."""
         if self.ts is None:
             logger.error("No transition state to evaluate the conformer of")
             return None
 
         else:
-            return self.ts.find_lowest_energy_ts_conformer()
+            return self.ts.find_lowest_energy_ts_conformer(
+                hmethod=hmethod, lmethod=lmethod
+            )
 
     @checkpoint_rxn_profile_step("single_points")
     @work_in("single_points")

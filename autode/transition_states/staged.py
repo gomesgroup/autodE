@@ -55,6 +55,10 @@ class StagedTSResult:
     receipts: Tuple[StagedTSReceipt, ...]
 
 
+class StagedTSPreparationError(RuntimeError):
+    """Raised when a required staged optimisation does not converge."""
+
+
 class StagedTSPreparation:
     """Prepare a TS through environment, bond, active, and full stages.
 
@@ -82,6 +86,7 @@ class StagedTSPreparation:
         n_cores: Optional[int] = None,
         calculation_runner: Optional[StageRunner] = None,
         name_prefix: str = "staged_ts",
+        required_converged_stages: Sequence[str] = ("full_optts",),
     ) -> None:
         if method is None:
             raise ValueError("Staged TS preparation requires an exact method")
@@ -105,6 +110,14 @@ class StagedTSPreparation:
             raise ValueError("Staged TS preparation requires at least one core")
         self.calculation_runner = calculation_runner or (lambda calc: calc.run())
         self.name_prefix = str(name_prefix)
+        required = tuple(dict.fromkeys(map(str, required_converged_stages)))
+        unknown = set(required).difference(self._STAGE_NAMES)
+        if unknown:
+            raise ValueError(
+                "Unknown required staged TS operations: "
+                + ", ".join(sorted(unknown))
+            )
+        self.required_converged_stages = frozenset(required)
 
     def _keywords_for(self, stage: str):
         if stage == "environment_relax":
@@ -176,18 +189,34 @@ class StagedTSPreparation:
         )
 
     def run(self, ts_guess: "TSguess") -> StagedTSResult:
-        """Run all four stages and return the final unconstrained TS."""
+        """Run all four stages and return the final unconstrained TS.
+
+        Conditioning stages may intentionally stop at bounded iteration limits.
+        By default only the final unconstrained OptTS must report convergence;
+        callers can require any additional stages through
+        ``required_converged_stages``.
+        """
 
         if max(self.active_atom_indices) >= ts_guess.n_atoms:
             raise ValueError("Active atom index exceeds TS atom count")
 
         working = ts_guess.copy()
         receipts = []
-        receipts.append(
+
+        def append_stage(receipt: StagedTSReceipt) -> None:
+            receipts.append(receipt)
+            if (
+                receipt.stage in self.required_converged_stages
+                and receipt.converged is not True
+            ):
+                raise StagedTSPreparationError(
+                    f"Required staged TS operation {receipt.stage} did not "
+                    f"converge (reported {receipt.converged})"
+                )
+
+        append_stage(
             self._run_stage(
-                working,
-                "environment_relax",
-                fixed_atoms=self.active_atom_indices,
+                working, "environment_relax", fixed_atoms=self.active_atom_indices
             )
         )
 
@@ -203,7 +232,7 @@ class StagedTSPreparation:
                     for pair in working.bond_rearrangement.all
                 }
             )
-        receipts.append(
+        append_stage(
             self._run_stage(
                 working,
                 "active_bond_relax",
@@ -218,16 +247,14 @@ class StagedTSPreparation:
         spectators = tuple(
             index for index in range(transition_state.n_atoms) if index not in active
         )
-        receipts.append(
+        append_stage(
             self._run_stage(
                 transition_state,
                 "active_region_optts",
                 fixed_atoms=spectators,
             )
         )
-        receipts.append(
-            self._run_stage(transition_state, "full_optts")
-        )
+        append_stage(self._run_stage(transition_state, "full_optts"))
         return StagedTSResult(
             transition_state=transition_state,
             receipts=tuple(receipts),
@@ -237,6 +264,7 @@ class StagedTSPreparation:
 __all__ = [
     "StagedTSKeywords",
     "StagedTSPreparation",
+    "StagedTSPreparationError",
     "StagedTSReceipt",
     "StagedTSResult",
 ]

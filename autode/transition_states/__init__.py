@@ -4,6 +4,7 @@ from autode.transition_states.transition_states import TransitionStates
 from autode.transition_states.staged import (
     StagedTSKeywords,
     StagedTSPreparation,
+    StagedTSPreparationError,
     StagedTSReceipt,
     StagedTSResult,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "TransitionStates",
     "StagedTSKeywords",
     "StagedTSPreparation",
+    "StagedTSPreparationError",
     "StagedTSReceipt",
     "StagedTSResult",
 ]

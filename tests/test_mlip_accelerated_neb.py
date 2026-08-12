@@ -318,7 +318,7 @@ def test_run_mlip_neb_uses_native_cineb_and_explicit_runner(
 
 
 @pytest.mark.parametrize(
-    ("optimize_result", "peak_species", "expected_status"),
+    ("optimize_result", "peak_species", "expected_status", "has_guess"),
     [
         (
             OptimizeResult(
@@ -329,6 +329,7 @@ def test_run_mlip_neb_uses_native_cineb_and_explicit_runner(
             ),
             Molecule(atoms=[Atom("H"), Atom("H", x=1.0)], mult=1),
             "nonconverged",
+            True,
         ),
         (
             OptimizeResult(
@@ -339,6 +340,7 @@ def test_run_mlip_neb_uses_native_cineb_and_explicit_runner(
             ),
             None,
             "no_peak",
+            False,
         ),
     ],
 )
@@ -349,6 +351,7 @@ def test_run_mlip_neb_returns_clear_unsuccessful_state(
     optimize_result,
     peak_species,
     expected_status,
+    has_guess,
 ):
     fake_cineb = FakeCINEB(
         peak_species=peak_species,
@@ -362,8 +365,8 @@ def test_run_mlip_neb_returns_clear_unsuccessful_state(
 
     assert result.status == expected_status
     assert result.converged is bool(optimize_result.success)
-    assert result.ts_guess_coordinates is None
-    assert neb.get_ts_guess() is None
+    assert (result.ts_guess_coordinates is not None) is has_guess
+    assert (neb.get_ts_guess() is not None) is has_guess
 
 
 def test_run_mlip_neb_records_failed_state_then_reraises(
