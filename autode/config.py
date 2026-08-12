@@ -28,14 +28,14 @@ class _ConfigClass:
     #
     max_core = Allocation(4, units="GB")
     # -------------------------------------------------------------------------
-    # DFT code to use. If set to None then the highest priority available code
-    # will be used:
+    # High-level method name or exact Method instance. If set to None then the
+    # highest priority available code will be used:
     # 1. 'orca', 2. 'g09' 3. 'nwchem'
     #
     hcode = None
     # -------------------------------------------------------------------------
-    # Semi-empirical/tight binding method to use. If set to None then the
-    # highest priority available will be used:   1. 'xtb', 2. 'mopac'
+    # Low-level method name or exact Method instance. If set to None then the
+    # highest priority available will be used: 1. 'xtb', 2. 'mopac'
     #
     lcode = None
     # -------------------------------------------------------------------------

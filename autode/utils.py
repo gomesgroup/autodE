@@ -6,6 +6,7 @@ import copy
 import signal
 import warnings
 import contextlib
+import inspect
 from time import time
 from typing import Any, Optional, Sequence, List, Callable, TYPE_CHECKING
 from functools import wraps
@@ -409,20 +410,31 @@ def requires_conformers(func: Callable) -> Callable:
 
 
 def requires_hl_level_methods(func: Callable) -> Callable:
-    """A function requiring both high and low-level methods to be available"""
+    """Require high- and low-level methods, honoring explicit method kwargs.
+
+    Decorated APIs may expose ``hmethod`` and ``lmethod`` keyword arguments.
+    Exact method objects supplied there are authoritative; configuration is
+    consulted only for an omitted method.
+    """
 
     @wraps(func)
     def wrapped_function(*args, **kwargs):
-        from autode.methods import get_lmethod, get_hmethod
+        from autode.methods import (
+            method_or_default_hmethod,
+            method_or_default_lmethod,
+        )
 
         suffix = "neither was available."
+        bound = inspect.signature(func).bind_partial(*args, **kwargs)
+        explicit_lmethod = bound.arguments.get("lmethod")
+        explicit_hmethod = bound.arguments.get("hmethod")
 
         try:
-            _ = get_lmethod()
+            _ = method_or_default_lmethod(explicit_lmethod)
 
             # Have a low-level method, so the high-level must not be available
             suffix = "the high-level was not available."
-            _ = get_hmethod()
+            _ = method_or_default_hmethod(explicit_hmethod)
 
         except MethodUnavailable:
             raise MethodUnavailable(

@@ -12,7 +12,10 @@ from autode.config import Config
 from autode.exceptions import CalculationException
 from autode.geom import calc_heavy_atom_rmsd
 from autode.log import logger
-from autode.methods import get_hmethod
+from autode.methods import (
+    method_or_default_hmethod,
+    method_or_default_lmethod,
+)
 from autode.mol_graphs import get_truncated_active_mol_graph
 from autode.utils import requires_atoms, requires_graph, ProcessPool
 
@@ -87,30 +90,64 @@ class TransitionState(TSbase):
         logger.info(f"Molecular graph updated with active bonds")
         return None
 
-    def _run_opt_ts_calc(self, method: "Method", name_ext: str) -> None:
+    def _run_opt_ts_calc(
+        self,
+        method: "Method",
+        name_ext: str,
+        calc: Optional[Calculation] = None,
+        keywords: Optional["Keywords"] = None,
+    ) -> Optional[Calculation]:
         """Run an optts calculation and attempt to set the geometry, energy and
         normal modes"""
-        assert method.keywords.opt_ts is not None, "Must have OptTS keywords"
-        optts_calc = Calculation(
-            name=f"{self.name}_{name_ext}",
-            molecule=self,
-            method=method,
-            n_cores=Config.n_cores,
-            keywords=method.keywords.opt_ts,
-        )
+        if calc is None:
+            if keywords is None:
+                keywords = method.keywords.opt_ts
+            assert keywords is not None, "Must have OptTS keywords"
+            optts_calc = Calculation(
+                name=f"{self.name}_{name_ext}",
+                molecule=self,
+                method=method,
+                n_cores=Config.n_cores,
+                keywords=keywords,
+            )
+        else:
+            if calc.molecule is not self:
+                raise ValueError(
+                    "Explicit OptTS calculation must reference this "
+                    "TransitionState instance"
+                )
+            if calc.method is not method:
+                raise ValueError(
+                    "Explicit OptTS calculation and method must be the same "
+                    "exact method instance"
+                )
+            if keywords is not None:
+                raise ValueError(
+                    "Do not supply keywords with an explicit OptTS calculation"
+                )
+            optts_calc = calc
         try:
             optts_calc.run()
 
             if not optts_calc.optimiser.converged:
-                self._reoptimise(optts_calc, name_ext, method)
+                return self._reoptimise(
+                    optts_calc,
+                    name_ext,
+                    method,
+                    keywords=optts_calc.keywords,
+                )
 
         except CalculationException:
             logger.error("Transition state optimisation calculation failed")
 
-        return None
+        return optts_calc
 
     def _reoptimise(
-        self, calc: Calculation, name_ext: str, method: "Method"
+        self,
+        calc: Calculation,
+        name_ext: str,
+        method: "Method",
+        keywords: Optional["Keywords"] = None,
     ) -> Calculation:
         """Rerun a calculation for more steps"""
 
@@ -120,7 +157,7 @@ class TransitionState(TSbase):
             return calc
 
         logger.info("Optimisation nearly converged")
-        if not self.could_have_correct_imag_mode:
+        if not self.could_have_correct_imag_mode_with(method=method):
             logger.warning("Lost imaginary mode")
             return calc
 
@@ -129,14 +166,16 @@ class TransitionState(TSbase):
             "more  optimisation steps"
         )
 
-        assert method.keywords.opt_ts is not None, "Must have OptTS keywords"
+        if keywords is None:
+            keywords = method.keywords.opt_ts
+        assert keywords is not None, "Must have OptTS keywords"
 
         calc = Calculation(
             name=f"{self.name}_{name_ext}_reopt",
             molecule=self,
             method=method,
             n_cores=Config.n_cores,
-            keywords=method.keywords.opt_ts,
+            keywords=keywords,
         )
         calc.run()
 
@@ -218,7 +257,22 @@ class TransitionState(TSbase):
         """Optimise this TS to a true TS"""
         logger.info(f"Optimising {self.name} to a transition state")
 
-        self._run_opt_ts_calc(method=get_hmethod(), name_ext=name_ext)
+        if calc is not None:
+            if method is None:
+                method = calc.method
+            elif method is not calc.method:
+                raise ValueError(
+                    "Explicit OptTS calculation and method must be the same "
+                    "exact method instance"
+                )
+        method = method_or_default_hmethod(method)
+
+        self._run_opt_ts_calc(
+            method=method,
+            name_ext=name_ext,
+            calc=calc,
+            keywords=keywords,
+        )
 
         # A transition state is a first order saddle point i.e. has a single
         # imaginary frequency
@@ -254,12 +308,14 @@ class TransitionState(TSbase):
             ).atoms
 
             disp_ts._run_opt_ts_calc(
-                method=get_hmethod(), name_ext=name_ext + ext
+                method=method,
+                name_ext=name_ext + ext,
+                keywords=keywords,
             )
 
             if (
-                self.imaginary_frequencies is not None
-                and len(self.imaginary_frequencies) == 1
+                disp_ts.imaginary_frequencies is not None
+                and len(disp_ts.imaginary_frequencies) == 1
             ):
                 logger.info(
                     "Displacement along second imaginary mode "
@@ -275,7 +331,10 @@ class TransitionState(TSbase):
         return None
 
     def find_lowest_energy_ts_conformer(
-        self, rmsd_threshold: Optional[float] = None
+        self,
+        rmsd_threshold: Optional[float] = None,
+        hmethod: Optional["Method"] = None,
+        lmethod: Optional["Method"] = None,
     ):
         """Find the lowest energy transition state conformer by performing
         constrained optimisations"""
@@ -287,8 +346,12 @@ class TransitionState(TSbase):
         _ts: TransitionState = self.copy()
         _ts.hessian, _ts.gradient, _ts.energy = None, None, None
 
-        hmethod = get_hmethod() if Config.hmethod_conformers else None
-        _ts.find_lowest_energy_conformer(hmethod=hmethod)
+        hmethod = method_or_default_hmethod(hmethod)
+        lmethod = method_or_default_lmethod(lmethod)
+        conf_hmethod = hmethod if Config.hmethod_conformers else None
+        _ts.find_lowest_energy_conformer(
+            lmethod=lmethod, hmethod=conf_hmethod
+        )
 
         # Remove similar TS conformer that are similar to this TS based on root
         # mean squared differences in their structures being above a threshold
@@ -315,9 +378,12 @@ class TransitionState(TSbase):
 
         # Optimise the lowest energy conformer to a transition state - will
         # .find_lowest_energy_conformer will have updated self.atoms etc.
-        _ts.optimise(name_ext="optts_conf")
+        _ts.optimise(name_ext="optts_conf", method=hmethod)
 
-        if _ts.is_true_ts and _ts.energy < self.energy:
+        if (
+            _ts.is_true_ts_for(hmethod=hmethod, lmethod=lmethod)
+            and _ts.energy < self.energy
+        ):
             logger.info("Conformer search successful - setting new attributes")
 
             self.atoms = _ts.atoms
@@ -337,11 +403,18 @@ class TransitionState(TSbase):
         """Is this TS a 'true' TS i.e. has at least on imaginary mode in the
         hessian and is the correct mode"""
 
+        return self.is_true_ts_for()
+
+    def is_true_ts_for(self, hmethod=None, lmethod=None) -> bool:
+        """Validate a TS using exact high- and low-level methods when given."""
+
         if self.energy is None:
             logger.warning("Cannot be true TS with no energy")
             return False
 
-        if self.has_imaginary_frequencies and self.has_correct_imag_mode:
+        if self.has_imaginary_frequencies and self.has_correct_imag_mode_with(
+            hmethod=hmethod, lmethod=lmethod
+        ):
             logger.info(
                 "Found a transition state with the correct "
                 "imaginary mode & links reactants and products"

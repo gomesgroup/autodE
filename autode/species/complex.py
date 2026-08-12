@@ -260,7 +260,7 @@ class Complex(Species):
         return None
 
     @work_in("conformers")
-    def populate_conformers(self):
+    def populate_conformers(self, lmethod=None):
         r"""
         Generate and optimise with a low level method a set of conformers, the
         number of which is::
@@ -284,7 +284,8 @@ class Complex(Species):
         self._generate_conformers()
 
         try:
-            lmethod = get_lmethod()
+            if lmethod is None:
+                lmethod = get_lmethod()
             for conformer in self.conformers:
                 conformer.optimise(method=lmethod)
                 conformer.print_xyz_file()

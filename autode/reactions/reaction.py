@@ -32,6 +32,7 @@ from autode.reactions import reaction_types
 if TYPE_CHECKING:
     from autode.species.species import Species
     from autode.units import Unit
+    from autode.wrappers.methods import Method
 
 
 class Reaction:
@@ -673,7 +674,17 @@ class Reaction:
     @requires_hl_level_methods
     @checkpoint_rxn_profile_step("transition_states")
     @work_in("transition_states")
-    def locate_transition_state(self) -> None:
+    def locate_transition_state(
+        self,
+        hmethod: Optional["Method"] = None,
+        lmethod: Optional["Method"] = None,
+    ) -> None:
+        """Locate transition states with optional exact method injection.
+
+        Explicit methods are propagated through every TS guess, OptTS, mode,
+        endpoint, and conformer operation.  Omitting them preserves the
+        configured autoDE method-selection behavior.
+        """
         assert self.type is not None, "Must have a reaction type"
         assert all(
             molecule.graph is not None for molecule in self.reacs + self.prods
@@ -685,10 +696,14 @@ class Reaction:
             r.graph.number_of_edges() for r in self.reacs  # type: ignore
         ):
             self.switch_reactants_products()
-            self.tss = find_tss(self)
+            self.tss = find_tss(
+                self, hmethod=hmethod, lmethod=lmethod
+            )
             self.switch_reactants_products()
         else:
-            self.tss = find_tss(self)
+            self.tss = find_tss(
+                self, hmethod=hmethod, lmethod=lmethod
+            )
 
         return None
 

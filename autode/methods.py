@@ -1,4 +1,4 @@
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, Union
 
 from autode.wrappers.G09 import G09
 from autode.wrappers.G16 import G16
@@ -16,9 +16,7 @@ from autode.wrappers.CP2K import CP2K
 from autode.log import logger
 from autode.config import Config
 from autode.exceptions import MethodUnavailable
-
-if TYPE_CHECKING:
-    from autode.wrappers.methods import Method
+from autode.wrappers.methods import Method
 
 """
 Functions to get the high and low level electronic structure methods to use
@@ -124,13 +122,18 @@ def get_first_available_method(
     raise MethodUnavailable("No electronic structure methods available")
 
 
-def get_defined_method(name, possibilities) -> "Method":
+def get_defined_method(
+    name: Union[str, "Method"], possibilities
+) -> "Method":
     """
     Get an electronic structure method defined by it's name.
 
     ---------------------------------------------------------------------------
     Arguments:
-        name (str):
+        name (str | Method): Method name or an exact method instance.  An
+                             instance is returned unchanged, which permits
+                             project-specific wrappers to be configured
+                             without registering them globally.
         possibilities (list(autode.wrappers.base.ElectronicStructureMethod)):
 
     Returns:
@@ -139,6 +142,19 @@ def get_defined_method(name, possibilities) -> "Method":
     Raises:
         (autode.exceptions.MethodUnavailable):
     """
+
+    if isinstance(name, Method):
+        if name.is_available:
+            return name
+        raise MethodUnavailable(
+            f"Electronic structure method *{name.name}* is not available"
+        )
+
+    if not isinstance(name, str):
+        raise TypeError(
+            "Configured electronic structure methods must be a method name "
+            "or an autode.wrappers.methods.Method instance"
+        )
 
     for method in possibilities:
         if method.name.lower() == name.lower():

@@ -11,8 +11,10 @@ from autode.bond_rearrangement import get_bond_rearrangs
 from autode.config import Config
 from autode.log import logger
 from autode.values import Distance, PotentialEnergy
-from autode.methods import get_hmethod
-from autode.methods import get_lmethod
+from autode.methods import (
+    method_or_default_hmethod,
+    method_or_default_lmethod,
+)
 from autode.utils import work_in
 from autode.mol_graphs import get_mapping
 from autode.mol_graphs import reac_graph_to_prod_graph
@@ -23,7 +25,7 @@ from autode.substitution import get_cost_rotate_translate
 from autode.substitution import get_substc_and_add_dummy_atoms
 
 
-def find_tss(reaction):
+def find_tss(reaction, hmethod=None, lmethod=None):
     """
     Find all the possible the transition states of a reaction over possible
     paths from reaction.reactant to reaction.product. Will not search the
@@ -37,6 +39,8 @@ def find_tss(reaction):
         (autode.transition_states.transition_states.TransitionStates):
     """
     logger.info("Finding possible transition states")
+    hmethod = method_or_default_hmethod(hmethod)
+    lmethod = method_or_default_lmethod(lmethod)
     reactant, product = reaction.reactant, reaction.product
 
     if species_are_isomorphic(reactant, product):
@@ -58,7 +62,14 @@ def find_tss(reaction):
             f"{bond_rearrangement.all}"
         )
 
-        ts = get_ts(str(reaction), reactant, product, bond_rearrangement)
+        ts = get_ts(
+            str(reaction),
+            reactant,
+            product,
+            bond_rearrangement,
+            hmethod=hmethod,
+            lmethod=lmethod,
+        )
 
         if ts is not None:
             tss.append(ts)
@@ -69,7 +80,9 @@ def find_tss(reaction):
     return tss
 
 
-def ts_guess_funcs_prms(name, reactant, product, bond_rearr):
+def ts_guess_funcs_prms(
+    name, reactant, product, bond_rearr, hmethod=None, lmethod=None
+):
     """
     Get the functions and parameters required for the function
 
@@ -88,7 +101,8 @@ def ts_guess_funcs_prms(name, reactant, product, bond_rearr):
     """
     r, p = reactant.copy(), product.copy()  # Reactants/products may be edited
 
-    lmethod, hmethod = get_lmethod(), get_hmethod()
+    lmethod = method_or_default_lmethod(lmethod)
+    hmethod = method_or_default_hmethod(hmethod)
 
     # TODO: make this less awful (consistent types)
     for i, pair in enumerate(bond_rearr.bbonds):
@@ -106,6 +120,7 @@ def ts_guess_funcs_prms(name, reactant, product, bond_rearr):
         bond_rearr,
         f"{name}_template_{bond_rearr}",
         hmethod,
+        lmethod,
     )
 
     if (not r.atoms.contain_metals) and hmethod != lmethod:
@@ -222,7 +237,9 @@ def translate_rotate_reactant(
 
 
 @work_in("truncated")
-def get_truncated_ts(name, reactant, product, bond_rearr):
+def get_truncated_ts(
+    name, reactant, product, bond_rearr, hmethod=None, lmethod=None
+):
     """Get the TS of a truncated reactant and product complex"""
 
     trnc_reactant = get_truncated_species(reactant, bond_rearr)
@@ -238,14 +255,28 @@ def get_truncated_ts(name, reactant, product, bond_rearr):
     # Find all the possible TSs
     for bond_rearr in bond_rearrangs:
         get_ts(
-            name, trnc_reactant, trnc_product, bond_rearr, is_truncated=True
+            name,
+            trnc_reactant,
+            trnc_product,
+            bond_rearr,
+            is_truncated=True,
+            hmethod=hmethod,
+            lmethod=lmethod,
         )
 
     logger.info("Done with truncation")
     return
 
 
-def get_ts(name, reactant, product, bond_rearr, is_truncated=False):
+def get_ts(
+    name,
+    reactant,
+    product,
+    bond_rearr,
+    is_truncated=False,
+    hmethod=None,
+    lmethod=None,
+):
     """For a bond rearrangement run PES exploration and TS optimisation to
     find a TS
 
@@ -265,6 +296,9 @@ def get_ts(name, reactant, product, bond_rearr, is_truncated=False):
     Returns:
         (autode.transition_states.transition_state.TransitionState): TS
     """
+
+    hmethod = method_or_default_hmethod(hmethod)
+    lmethod = method_or_default_lmethod(lmethod)
 
     if bond_rearr.n_fbonds > bond_rearr.n_bbonds:
         raise NotImplementedError(
@@ -295,12 +329,24 @@ def get_ts(name, reactant, product, bond_rearr, is_truncated=False):
 
     # If specified then strip non-core atoms from the structure
     if not is_truncated and is_worth_truncating(reactant, bond_rearr):
-        get_truncated_ts(name, reactant, product, bond_rearr)
+        get_truncated_ts(
+            name,
+            reactant,
+            product,
+            bond_rearr,
+            hmethod=hmethod,
+            lmethod=lmethod,
+        )
 
     # There are multiple methods of finding a transition state. Iterate through
     # from the cheapest -> most expensive
     for func, params in ts_guess_funcs_prms(
-        name, reactant, product, bond_rearr
+        name,
+        reactant,
+        product,
+        bond_rearr,
+        hmethod=hmethod,
+        lmethod=lmethod,
     ):
         logger.info(f"Trying to find a TS guess with {func.__name__}")
         ts_guess = func(*params)
@@ -308,14 +354,18 @@ def get_ts(name, reactant, product, bond_rearr, is_truncated=False):
         if ts_guess is None:
             continue
 
-        if not ts_guess.could_have_correct_imag_mode:
+        if not ts_guess.could_have_correct_imag_mode_with(
+            method=hmethod
+        ):
             continue
 
         # Form a transition state object and run an OptTS calculation
         ts = TransitionState(ts_guess, bond_rearr=bond_rearr)
-        ts.optimise()
+        ts.optimise(method=hmethod)
 
-        if not ts.is_true_ts:
+        if not ts.is_true_ts_for(
+            hmethod=hmethod, lmethod=lmethod
+        ):
             continue
 
         # Save a transition state template if specified in the config

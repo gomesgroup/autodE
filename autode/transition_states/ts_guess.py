@@ -11,7 +11,10 @@ from autode.values import Distance
 from autode.exceptions import CalculationException
 from autode.log import logger
 from autode.utils import work_in
-from autode.methods import get_lmethod, get_hmethod
+from autode.methods import (
+    method_or_default_hmethod,
+    method_or_default_lmethod,
+)
 from autode.mol_graphs import (
     get_mapping_ts_template,
     get_truncated_active_mol_graph,
@@ -63,6 +66,7 @@ def get_template_ts_guess(
     bond_rearr: "BondRearrangement",
     name: str,
     method: "Method",
+    lmethod: Optional["Method"] = None,
 ):
     """
     Get a transition state guess object by searching though the stored TS
@@ -138,6 +142,7 @@ def get_template_ts_guess(
                 distance_consts=active_bonds_and_dists_ts,
                 method=method,
                 keywords=method.keywords.opt,
+                lmethod=lmethod,
             )
             return ts_guess
 
@@ -177,7 +182,9 @@ class TSguess(TSbase):
         return ts_guess
 
     @work_in("scan_to_template")
-    def _lmethod_scan_to_point(self):
+    def _lmethod_scan_to_point(
+        self, method: Optional["Method"] = None
+    ):
         """
         Run a set of constrained low-level optimisations from the current
         distances to the final set of constraints using a linear path with
@@ -187,7 +194,7 @@ class TSguess(TSbase):
         Raises:
             (autode.exceptions.CalculationException):
         """
-        l_method = get_lmethod()
+        l_method = method_or_default_lmethod(method)
 
         final_constraints = self.constraints.distance
         current_constraints = {
@@ -235,6 +242,7 @@ class TSguess(TSbase):
         distance_consts: Optional[dict] = None,
         method: Optional["Method"] = None,
         keywords: Optional["Keywords"] = None,
+        lmethod: Optional["Method"] = None,
     ):
         """Get a TS guess from a constrained optimisation with the active atoms
         fixed at values defined in distance_consts
@@ -262,11 +270,10 @@ class TSguess(TSbase):
         if distance_consts is not None:
             self.constraints.distance = DistanceConstraints(distance_consts)
 
-        self._lmethod_scan_to_point()
+        self._lmethod_scan_to_point(method=lmethod)
 
         # Default to high-level regular optimisations
-        if method is None:
-            method = get_hmethod()
+        method = method_or_default_hmethod(method)
         if keywords is None:
             keywords = method.keywords.opt
             assert (

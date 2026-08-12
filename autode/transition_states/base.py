@@ -9,7 +9,10 @@ from autode.config import Config
 from autode.geom import calc_rmsd
 from autode.constraints import DistanceConstraints
 from autode.log import logger
-from autode.methods import get_hmethod, get_lmethod
+from autode.methods import (
+    method_or_default_hmethod,
+    method_or_default_lmethod,
+)
 from autode.mol_graphs import make_graph, species_are_isomorphic
 from autode.species.species import Species
 from autode.exceptions import AutodeException
@@ -138,6 +141,10 @@ class TSbase(Species, ABC):
 
     @property
     def could_have_correct_imag_mode(self) -> bool:
+        """Whether the configured high-level method gives a plausible mode."""
+        return self.could_have_correct_imag_mode_with()
+
+    def could_have_correct_imag_mode_with(self, method=None) -> bool:
         """
         Determine if a point on the PES could have the correct imaginary mode.
         This must have
@@ -162,7 +169,8 @@ class TSbase(Species, ABC):
 
         if self.hessian is None:
             logger.info("Calculating the hessian..")
-            self._run_hess_calculation(method=get_hmethod())
+            method = method_or_default_hmethod(method)
+            self._run_hess_calculation(method=method)
 
         imag_freqs = self.imaginary_frequencies
 
@@ -190,6 +198,12 @@ class TSbase(Species, ABC):
 
     @property
     def has_correct_imag_mode(self) -> bool:
+        """Validate the mode using configured high- and low-level methods."""
+        return self.has_correct_imag_mode_with()
+
+    def has_correct_imag_mode_with(
+        self, hmethod=None, lmethod=None
+    ) -> bool:
         """Check that the imaginary mode is 'correct' set the calculation
         (hessian or optts)
 
@@ -203,7 +217,10 @@ class TSbase(Species, ABC):
         """
 
         # Run a fast check on  whether it's likely the mode is correct
-        if not self.could_have_correct_imag_mode:
+        hmethod = method_or_default_hmethod(hmethod)
+        lmethod = method_or_default_lmethod(lmethod)
+
+        if not self.could_have_correct_imag_mode_with(method=hmethod):
             return False
 
         if self.imag_mode_has_correct_displacement(req_all=True):
@@ -215,7 +232,11 @@ class TSbase(Species, ABC):
 
         # Perform displacements over the imaginary mode to ensure the mode
         # connects reactants and products
-        if self.imag_mode_links_reactant_products(disp_mag=1.0):
+        if self.imag_mode_links_reactant_products(
+            disp_mag=1.0,
+            hmethod=hmethod,
+            lmethod=lmethod,
+        ):
             logger.info("Imaginary mode does link reactants and products")
             return True
 
@@ -318,7 +339,12 @@ class TSbase(Species, ABC):
         )
         return False
 
-    def imag_mode_links_reactant_products(self, disp_mag: float = 1.0) -> bool:
+    def imag_mode_links_reactant_products(
+        self,
+        disp_mag: float = 1.0,
+        hmethod=None,
+        lmethod=None,
+    ) -> bool:
         """Displaces atoms along the imaginary mode forwards (f) and backwards (b)
         to see if products and reactants are made
 
@@ -340,10 +366,18 @@ class TSbase(Species, ABC):
                 " and/or products not set "
             )
 
-        # Generate and optimise conformers with the low level of theory
+        hmethod = method_or_default_hmethod(hmethod)
+        lmethod = method_or_default_lmethod(lmethod)
+
+        # Generate and optimise conformers with the exact low-level method.
         try:
-            self.reactant.populate_conformers()
-            self.product.populate_conformers()
+            from autode.species import Complex
+
+            for endpoint in (self.reactant, self.product):
+                if isinstance(endpoint, Complex):
+                    endpoint.populate_conformers(lmethod=lmethod)
+                else:
+                    endpoint.populate_conformers()
         except NotImplementedError:
             logger.error(
                 "Could not generate conformers of reactant/product(s)"
@@ -365,7 +399,8 @@ class TSbase(Species, ABC):
 
         # The high and low level methods may not have the same minima, so
         # optimise and recheck isomorphisms
-        for method in (get_hmethod(), get_lmethod()):
+        methods = (hmethod,) if hmethod is lmethod else (hmethod, lmethod)
+        for method in methods:
             for mol in (f_mol, b_mol):
                 try:
                     mol.optimise(
