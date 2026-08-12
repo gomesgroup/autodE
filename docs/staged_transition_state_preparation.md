@@ -42,3 +42,8 @@ Exact `Method` objects are also valid values for `Config.hcode` and
 `Config.lcode`.  Explicit arguments are preferred for reproducible workflows
 because they are propagated through template searches, AdaptivePath, OptTS,
 mode validation, endpoint relaxation, and TS conformer refinement.
+
+`MLIPAcceleratedNEB` also retains the current peak as a labelled TS guess when
+a climbing-image band stops at its iteration budget.  The result remains
+`nonconverged`; downstream code can refine the seed without confusing it with a
+converged path.

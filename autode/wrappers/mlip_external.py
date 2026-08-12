@@ -965,13 +965,19 @@ class MLIPAcceleratedNEB:
             )
             raise
 
+        peak = self.mlip_path.peak_species
         if not bool(optimize_result.success):
             status = "nonconverged"
-        elif self.mlip_path.peak_species is None:
+        elif peak is None:
             status = "no_peak"
         else:
             status = "succeeded"
-            peak = self.mlip_path.peak_species
+
+        # Even a budget-limited CINEB can provide a useful, explicitly labelled
+        # TS seed.  Preserve its current peak for downstream OptTS instead of
+        # discarding all path information solely because the band did not meet
+        # the optimizer convergence threshold.
+        if peak is not None:
             self.ts_guess = TSguess(
                 atoms=peak.atoms,
                 reactant=self.reactant,
