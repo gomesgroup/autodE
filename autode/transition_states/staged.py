@@ -58,6 +58,10 @@ class StagedTSResult:
 class StagedTSPreparationError(RuntimeError):
     """Raised when a required staged optimisation does not converge."""
 
+    def __init__(self, message: str, receipts: Sequence[StagedTSReceipt]):
+        super().__init__(message)
+        self.receipts = tuple(receipts)
+
 
 class StagedTSPreparation:
     """Prepare a TS through environment, bond, active, and full stages.
@@ -211,7 +215,8 @@ class StagedTSPreparation:
             ):
                 raise StagedTSPreparationError(
                     f"Required staged TS operation {receipt.stage} did not "
-                    f"converge (reported {receipt.converged})"
+                    f"converge (reported {receipt.converged})",
+                    receipts=receipts,
                 )
 
         append_stage(

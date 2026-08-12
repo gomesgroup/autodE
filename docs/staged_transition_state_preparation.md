@@ -19,7 +19,9 @@ bounded preparation stop remains distinguishable from an execution failure.
 The three conditioning stages may intentionally reach their iteration limits.
 By default the final unconstrained `full_optts` stage must converge; otherwise
 `StagedTSPreparationError` is raised and no candidate is returned. Projects
-can tighten this policy explicitly with `required_converged_stages`.
+can tighten this policy explicitly with `required_converged_stages`. The
+exception retains all receipts through the rejected stage for provenance and
+recovery decisions.
 
 ```python
 from autode.transition_states import StagedTSPreparation
