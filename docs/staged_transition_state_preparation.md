@@ -47,3 +47,8 @@ mode validation, endpoint relaxation, and TS conformer refinement.
 a climbing-image band stops at its iteration budget.  The result remains
 `nonconverged`; downstream code can refine the seed without confusing it with a
 converged path.
+
+For external-I/O CINEB calculations, `run_mlip_neb` accepts independent
+`image_workers` and `calculation_cores` values and rejects requests whose
+product exceeds the declared total core allocation.  This permits, for
+example, four concurrent one-core ProgExt gradients inside a four-core job.

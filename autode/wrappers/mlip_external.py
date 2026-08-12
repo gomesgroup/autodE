@@ -518,6 +518,7 @@ class MLIPNEBResult:
     n_images: int
     n_cores: int
     image_workers: int
+    calculation_cores: int
     max_steps: int
     method_name: str
     method_repr: str
@@ -666,7 +667,12 @@ class MLIPAcceleratedNEB:
         )
 
     def _request(
-        self, *, max_steps: int, n_cores: int, image_workers: int
+        self,
+        *,
+        max_steps: int,
+        n_cores: int,
+        image_workers: int,
+        calculation_cores: int,
     ) -> Dict[str, Any]:
         method_type = type(self.method)
         return {
@@ -676,6 +682,7 @@ class MLIPAcceleratedNEB:
             "max_steps": max_steps,
             "n_cores": n_cores,
             "image_workers": image_workers,
+            "calculation_cores": calculation_cores,
             "method": {
                 "class": (
                     f"{method_type.__module__}.{method_type.__qualname__}"
@@ -813,6 +820,7 @@ class MLIPAcceleratedNEB:
         max_steps: int = 200,
         n_cores: int = 1,
         image_workers: Optional[int] = None,
+        calculation_cores: Optional[int] = None,
         calculation_runner=None,
         resume: bool = True,
     ) -> MLIPNEBResult:
@@ -828,7 +836,9 @@ class MLIPAcceleratedNEB:
             raise TypeError("n_cores must be an integer")
         if n_cores < 1:
             raise ValueError("n_cores must be positive")
-        explicitly_separated_resources = image_workers is not None
+        explicitly_separated_resources = (
+            image_workers is not None or calculation_cores is not None
+        )
         if image_workers is None:
             image_workers = n_cores
         if not isinstance(image_workers, int) or isinstance(
@@ -837,6 +847,18 @@ class MLIPAcceleratedNEB:
             raise TypeError("image_workers must be an integer")
         if image_workers < 1:
             raise ValueError("image_workers must be positive")
+        if calculation_cores is None:
+            calculation_cores = max(n_cores // image_workers, 1)
+        if not isinstance(calculation_cores, int) or isinstance(
+            calculation_cores, bool
+        ):
+            raise TypeError("calculation_cores must be an integer")
+        if calculation_cores < 1:
+            raise ValueError("calculation_cores must be positive")
+        if image_workers * calculation_cores > n_cores:
+            raise ValueError(
+                "concurrent NEB image resources exceed the total core allocation"
+            )
 
         logger.info(
             f"Running explicit MLIP CINEB with {self.n_images} images"
@@ -846,6 +868,7 @@ class MLIPAcceleratedNEB:
             max_steps=max_steps,
             n_cores=n_cores,
             image_workers=image_workers,
+            calculation_cores=calculation_cores,
         )
         resumed_result = self._load_resume(request) if resume else None
         was_resumed = resumed_result is not None
@@ -873,6 +896,7 @@ class MLIPAcceleratedNEB:
                 n_images=self.n_images,
                 n_cores=n_cores,
                 image_workers=image_workers,
+                calculation_cores=calculation_cores,
                 max_steps=max_steps,
                 method_name=self.method.name,
                 method_repr=repr(self.method),
@@ -951,7 +975,7 @@ class MLIPAcceleratedNEB:
             if explicitly_separated_resources:
                 calculate_kwargs.update(
                     image_workers=image_workers,
-                    calculation_cores=n_cores,
+                    calculation_cores=calculation_cores,
                 )
             optimize_result = self.mlip_path.calculate(**calculate_kwargs)
         except Exception as error:
