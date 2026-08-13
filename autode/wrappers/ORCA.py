@@ -1,5 +1,6 @@
 import numpy as np
 import os
+import re
 import autode.wrappers.keywords as kws
 import autode.wrappers.methods
 from typing import List, TYPE_CHECKING
@@ -49,6 +50,23 @@ vdw_gaussian_solvent_dict = {
     "tetrahydrofuran": "THF",
     "toluene": "Toluene",
 }
+
+
+_FINAL_SINGLE_POINT_ENERGY = re.compile(
+    r"^\s*FINAL SINGLE POINT ENERGY(?:\s+\([^)]*\))?\s+"
+    r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[EeDd][-+]?\d+)?)\s*$"
+)
+
+
+def parse_final_single_point_energy(line: str) -> PotentialEnergy:
+    """Parse standard and annotated ORCA final-energy lines."""
+
+    match = _FINAL_SINGLE_POINT_ENERGY.fullmatch(line)
+    if match is None:
+        raise ValueError("not an ORCA final single-point energy line")
+
+    value = match.group(1).replace("D", "E").replace("d", "e")
+    return PotentialEnergy(value, units="Ha")
 
 
 def print_added_internals(inp_file, calc_input):
@@ -373,7 +391,10 @@ class ORCA(autode.wrappers.methods.ExternalMethodOEGH):
 
         for line in reversed(calc.output.file_lines):
             if "FINAL SINGLE POINT ENERGY" in line:
-                return PotentialEnergy(line.split()[4], units="Ha")
+                try:
+                    return parse_final_single_point_energy(line)
+                except ValueError:
+                    continue
 
         raise CouldNotGetProperty(name="energy")
 
@@ -728,7 +749,10 @@ class ORCAOptimiser(ExternalOptimiser):
         energies = []
         for line in self._lines:
             if "FINAL SINGLE POINT ENERGY" in line:
-                energies.append(PotentialEnergy(line.split()[4], units="Ha"))
+                try:
+                    energies.append(parse_final_single_point_energy(line))
+                except ValueError:
+                    continue
 
         if len(energies) < 2:
             return PotentialEnergy(np.inf)
