@@ -53,6 +53,7 @@ class GPU4PySCF(autode.wrappers.methods.ExternalMethodOEGH):
         ``CUDA_VISIBLE_DEVICES`` has not already been set -- never failing if
         that binding is missing (it is not a hard dependency).
         """
+        self._set_cupy_cache()  # persist CuPy JIT cache before cupy is imported
         try:
             import gpu4pyscf  # noqa: F401
         except ImportError:
@@ -102,6 +103,146 @@ class GPU4PySCF(autode.wrappers.methods.ExternalMethodOEGH):
         """GPU4PySCF runs in memory, no external I/O needed"""
         return False
 
+    @staticmethod
+    def _set_cupy_cache():
+        """Point CuPy at a persistent per-user on-disk kernel cache (BeeGFS)
+        *before* CuPy is imported, so autodE's many short GPU4PySCF processes
+        reuse JIT-compiled kernels instead of repaying cold-start each time.
+        Mirrors setup-pyscf.sh; respects a pre-set ``CUPY_CACHE_DIR``. Keyed by
+        arch/CUDA so x86 and GH200 cubins never mix.
+        """
+        import os
+        import platform
+
+        if os.environ.get("CUPY_CACHE_DIR"):
+            return
+        key = "arm64-cuda13" if platform.machine() == "aarch64" else "x86_64-cuda12"
+        user = os.environ.get("USER") or "unknown"
+        # Single leaf under the sticky (1777) root so every user owns their dir
+        # (no shared intermediate <arch> dir only root could write). Robust for SLURM.
+        cache = f"/mnt/beegfs/software/pyscf/.cupy-cache/{key}__{user}"
+        try:
+            os.makedirs(cache, exist_ok=True)
+            os.environ["CUPY_CACHE_DIR"] = cache
+        except OSError:
+            pass
+
+    # ---- SCF construction & robust convergence ---------------------------
+    @staticmethod
+    def _build_scf(mol, functional):
+        """Build a density-fitted, spin-aware SCF object for ``mol``.
+
+        * RKS for closed-shell (``mol.spin == 0``), UKS otherwise -- the
+          wrapper is no longer RKS-only, so open-shell (radical / high-spin)
+          reactions automatically use an unrestricted reference.
+        * Density fitting is enabled with ``auxbasis=None``. PySCF 2.14 then
+          picks JFIT for pure (LDA/GGA/mGGA) functionals and JKFIT for
+          hybrid / range-separated / HF, and leaves diffuse ``*-D`` bases on
+          their correct fallback. Do NOT hardcode a universal JKFIT here: it
+          is the wrong (larger) set for pure DFT and has no mapping for
+          def2-*D bases. Enabling DF is the single biggest speed / GPU-memory
+          win over the previous full 4-centre build.
+        """
+        import os
+
+        from gpu4pyscf import dft
+
+        cls = dft.RKS if mol.spin == 0 else dft.UKS
+        mf = cls(mol, xc=functional).density_fit()
+        # CDERI placement is automatic: gpu4pyscf keeps it on-GPU when it fits and
+        # otherwise spills to host (pinned) RAM and streams — a plain DF run never
+        # OOMs on CDERI (verified). Opt-in override for deliberately capping the
+        # GPU footprint (e.g. co-sharing a GPU): AUTODE_GPU4PYSCF_CDERI_HOST=1
+        # forces host storage always. Unset (default) => auto, unchanged behaviour.
+        if os.environ.get("AUTODE_GPU4PYSCF_CDERI_HOST"):
+            mf.with_df.use_gpu_memory = False
+        mf.conv_tol = 1e-9
+        mf.max_cycle = 100
+        return mf
+
+    @staticmethod
+    def _converge(mf):
+        """Drive the SCF with escalating robustness; return the total energy.
+
+        1. plain DIIS (``mf.kernel()``)
+        2. SOSCF / Newton -- skipped when a solvent model is attached, since
+           the augmented-Hessian allocation bypasses gpu4pyscf's managed pool
+           and OOMs at large basis (observed on GH200 with SMD).
+        3. level-shift then RELAX: converge with a shift to damp an
+           oscillation, then re-converge from that density with the shift
+           removed, so the final density is a true stationary point (a
+           level-shifted density can otherwise be flagged 'converged').
+        """
+        e = mf.kernel()
+        if getattr(mf, "converged", False):
+            return e
+
+        if getattr(mf, "with_solvent", None) is None:
+            try:
+                nmf = mf.newton()
+                nmf.kernel(mf.mo_coeff, mf.mo_occ)
+                if getattr(nmf, "converged", False):
+                    mf.mo_coeff, mf.mo_occ = nmf.mo_coeff, nmf.mo_occ
+                    mf.mo_energy, mf.e_tot = nmf.mo_energy, nmf.e_tot
+                    mf.converged = True
+                    return mf.e_tot
+            except Exception:
+                pass
+
+        try:
+            mf.level_shift = 0.3
+            mf.kernel()
+            dm = mf.make_rdm1()
+            mf.level_shift = 0.0
+            e = mf.kernel(dm0=dm)     # relax to a shift-free stationary density
+        except Exception:
+            pass
+        return mf.e_tot
+
+    @staticmethod
+    def _maybe_broken_symmetry(mf, mol, functional):
+        """Opt-in broken-symmetry check for a closed-shell reference.
+
+        Enabled by env ``AUTODE_GPU4PYSCF_BROKEN_SYM=1``. For a converged RKS
+        (``mol.spin == 0``) it builds a UKS from a HOMO/LUMO-mixed guess to
+        localise opposite spins, converges it, and adopts the broken-symmetry
+        solution when it is >1e-4 Ha lower (a genuine diradical / open-shell
+        singlet). Best-effort: any failure leaves the RKS result untouched.
+        gpu4pyscf has no ``stability()``, so this mixing is the portable route.
+
+        Returns ``(mf, energy)`` -- the (possibly replaced) mean-field object
+        and its energy.
+        """
+        import os
+
+        if mol.spin != 0 or not os.environ.get("AUTODE_GPU4PYSCF_BROKEN_SYM"):
+            return mf, mf.e_tot
+        try:
+            import cupy as cp
+            from gpu4pyscf import dft
+
+            e_rks = float(mf.e_tot)
+            nocc = mol.nelectron // 2
+            homo, lumo = nocc - 1, nocc
+            ca = mf.mo_coeff.copy()
+            cb = mf.mo_coeff.copy()
+            theta = cp.pi / 4.0
+            h = cb[:, homo].copy()
+            l = cb[:, lumo].copy()
+            cb[:, homo] = cp.cos(theta) * h + cp.sin(theta) * l
+            cb[:, lumo] = -cp.sin(theta) * h + cp.cos(theta) * l
+            occ = mf.mo_occ / 2.0            # (nmo,) with 1.0 in occupied
+            umf = dft.UKS(mol, xc=functional).density_fit()
+            umf.conv_tol = 1e-9
+            umf.max_cycle = 100
+            dm0 = umf.make_rdm1(cp.stack([ca, cb]), cp.stack([occ, occ]))
+            e_bs = float(umf.kernel(dm0=dm0))
+            if getattr(umf, "converged", False) and e_bs < e_rks - 1e-4:
+                return umf, e_bs
+        except Exception:
+            pass
+        return mf, mf.e_tot
+
     def execute(self, calc: "CalculationExecutor") -> None:
         """Execute GPU4PySCF calculation directly in Python"""
         if not self.is_available:
@@ -127,15 +268,15 @@ class GPU4PySCF(autode.wrappers.methods.ExternalMethodOEGH):
         self._mol.basis = basis
         self._mol.build()
 
-        # Set up DFT calculation
-        self._mf = dft.RKS(self._mol)
-
-        # Set functional (same generic-keyword fallback as the basis)
+        # Determine the functional first (needed to build the SCF object).
+        # Same generic-keyword fallback as the basis above.
         functional = 'pbe0'  # default
         for keyword in calc.input.keywords:
             if isinstance(keyword, kws.Functional):
                 functional = getattr(keyword, 'gpu4pyscf', None) or str(keyword)
-        self._mf.xc = functional
+
+        # Density-fitted, spin-aware SCF (RKS/UKS by spin; DF on). See _build_scf.
+        self._mf = self._build_scf(self._mol, functional)
 
         # Run calculation
         if isinstance(calc.input.keywords, kws.OptKeywords):
@@ -165,9 +306,8 @@ class GPU4PySCF(autode.wrappers.methods.ExternalMethodOEGH):
                     except OSError:
                         pass
             self._mol = mol_eq  # Update molecule with optimized geometry
-            self._mf = dft.RKS(self._mol)  # Create new RKS object with optimized geometry
-            self._mf.xc = functional
-            self._energy = self._mf.kernel()  # Get final energy
+            self._mf = self._build_scf(self._mol, functional)  # DF + spin-aware
+            self._energy = self._converge(self._mf)  # robust final energy
 
             bohr_to_angstrom = 0.529177249
             coords = np.array(self._mol.atom_coords()) * bohr_to_angstrom
@@ -179,7 +319,12 @@ class GPU4PySCF(autode.wrappers.methods.ExternalMethodOEGH):
             # executor's optimiser so ``calc.optimiser.converged`` is True.
             calc.optimiser = GPU4PySCFOptimiser(converged=True)
         else:
-            self._energy = self._mf.kernel()
+            self._energy = self._converge(self._mf)
+            # Opt-in broken-symmetry check for a closed-shell reference
+            # (AUTODE_GPU4PYSCF_BROKEN_SYM=1); no-op otherwise.
+            self._mf, self._energy = self._maybe_broken_symmetry(
+                self._mf, self._mol, functional
+            )
 
             # If a gradient is requested (e.g. for NEB / adaptive paths),
             # compute the analytic nuclear gradient (Hartree / Bohr).
