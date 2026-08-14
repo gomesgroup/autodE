@@ -36,14 +36,23 @@ except ImportError:
     logger = logging.getLogger(__name__)
 
 
-# Default MLIP server endpoints
-# The gateway at gpg-head:8080 load-balances across all backends
-DEFAULT_MLIP_SERVERS = {
-    "gpg-gateway": "http://gpg-head:8080",  # Preferred: load-balanced gateway
-    "gpg-cluster": "http://gpg-boltzmann:5003",
-    "localhost": "http://localhost:5003",
-    "materials-id": "http://id-gpu01.materials.local.cmu.edu:8888",
+# Normal operation has exactly one default: the JSON router.  Direct JSON
+# backends are an administrator-only escape hatch, and the :5003 entries use a
+# different multipart/file protocol that is not equivalent to /calculate.
+ROUTER_URL = "http://gpg-head:8080"
+DEFAULT_MLIP_SERVERS = {"gpg-router": ROUTER_URL}
+DIRECT_MLIP_FALLBACKS = {
+    "gpg-file-protocol": "http://gpg-boltzmann:5003",
+    "localhost-file-protocol": "http://localhost:5003",
+    "materials-id-backend": "http://id-gpu01.materials.local.cmu.edu:8888",
 }
+
+
+def _allow_direct_fallbacks() -> bool:
+    """Return whether the administrator-only direct fallback chain is enabled."""
+    return os.environ.get("AUTODE_MLIP_ALLOW_DIRECT_FALLBACKS", "").lower() in {
+        "1", "true", "yes", "on"
+    }
 
 
 def check_mlip_server(server_url: str) -> bool:
@@ -105,15 +114,19 @@ def find_best_mlip_server() -> Optional[str]:
     """
     Find the best available MLIP server.
 
-    Checks servers in order of preference:
-    1. GPG cluster server (gpg-boltzmann:5003)
-    2. Materials ID server (id-gpu01:8888)
-    3. Localhost (localhost:5003)
+    Checks the GPG JSON router by default. Direct endpoints are considered only
+    when ``AUTODE_MLIP_ALLOW_DIRECT_FALLBACKS=1`` is explicitly set. The :5003
+    file-protocol endpoints remain available for diagnostics, but they are not
+    JSON-router equivalents and will not satisfy this module's /calculate call.
 
     Returns:
         URL of available server, or None if none found
     """
-    for name, url in DEFAULT_MLIP_SERVERS.items():
+    candidates = dict(DEFAULT_MLIP_SERVERS)
+    if _allow_direct_fallbacks():
+        candidates.update(DIRECT_MLIP_FALLBACKS)
+
+    for name, url in candidates.items():
         if check_mlip_server(url):
             logger.info(f"Found MLIP server: {name} at {url}")
             return url
@@ -143,15 +156,13 @@ def run_mlip_single_point(
         charge: Molecular charge
         multiplicity: Spin multiplicity
         model: MLIP model name (aimnet2, uma, etc.)
-        server_url: MLIP server URL (auto-detected if None)
+        server_url: MLIP server URL (the GPG router if None)
 
     Returns:
         MLIPCalculation with energy and forces
     """
     if server_url is None:
-        server_url = find_best_mlip_server()
-        if server_url is None:
-            raise RuntimeError("No MLIP server available")
+        server_url = find_best_mlip_server() or ROUTER_URL
 
     try:
         import urllib.request
@@ -221,7 +232,7 @@ def create_extopt_script(
         Path to the created script
     """
     if server_url is None:
-        server_url = find_best_mlip_server() or "http://localhost:5003"
+        server_url = find_best_mlip_server() or ROUTER_URL
 
     script = f'''#!/bin/bash
 # ORCA ExtOpt script for MLIP ({model})
@@ -325,7 +336,7 @@ def generate_qm_mlip_oniom_input(
         Complete ORCA input file content
     """
     if server_url is None:
-        server_url = find_best_mlip_server() or "http://localhost:5003"
+        server_url = find_best_mlip_server() or ROUTER_URL
 
     lines = []
 
@@ -432,10 +443,7 @@ def mlip_preoptimize(
     import numpy as np
 
     if server_url is None:
-        server_url = find_best_mlip_server()
-        if server_url is None:
-            logger.warning("No MLIP server available, skipping pre-optimization")
-            return molecule
+        server_url = find_best_mlip_server() or ROUTER_URL
 
     coords = [(a.label, *a.coord) for a in molecule.atoms]
     current_coords = np.array([[x, y, z] for _, x, y, z in coords])
@@ -507,7 +515,7 @@ class MLIPAcceleratedNEB:
         self.mlip_model = mlip_model
         self.dft_method = dft_method
         self.n_images = n_images
-        self.server_url = server_url or find_best_mlip_server()
+        self.server_url = server_url or find_best_mlip_server() or ROUTER_URL
 
         self.mlip_path = None
         self.dft_path = None

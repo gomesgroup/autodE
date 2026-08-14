@@ -51,7 +51,7 @@ solvated_mol = mol.optimise(method=ade.methods.ORCA(), keywords=keywords)
 from autode.wrappers import MLIPConfig
 
 # Use machine learning potentials for fast pre-optimization
-config = MLIPConfig(model='aimnet2', server_url='http://localhost:5003')
+config = MLIPConfig(model='aimnet2', server_url='http://gpg-head:8080')
 mol.optimise(method=ade.methods.ORCA(), mlip_config=config)
 # 10-100x faster initial optimization before DFT refinement
 ```
@@ -263,9 +263,9 @@ The gomesgroup fork supports multiple architectures for MLIP integration:
 
 | Architecture | Platform | MLIP Server |
 |--------------|----------|-------------|
-| x86_64 | Linux (Intel/AMD) | `localhost:5003` |
-| aarch64 | Linux (ARM64/Grace Hopper) | `localhost:5003` |
-| arm64 + Darwin | macOS (Apple Silicon) | `localhost:5003` |
+| x86_64 | Linux (Intel/AMD) | `http://gpg-head:8080` (`aimnet2` explicit) |
+| aarch64 | Linux (ARM64/Grace Hopper) | `http://gpg-head:8080` (`aimnet2` explicit) |
+| arm64 + Darwin | macOS (Apple Silicon) | Configure a JSON router and explicit model |
 
 ## Development
 

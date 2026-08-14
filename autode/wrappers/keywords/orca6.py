@@ -619,7 +619,7 @@ class ExtOptKeywords(ORCA6Keywords):
 
     Example:
         >>> extopt = ExtOptKeywords(
-        ...     command="mlip_client http://localhost:5003 aimnet2"
+        ...     command="mlip_client http://gpg-head:8080 aimnet2"
         ... )
     """
 
