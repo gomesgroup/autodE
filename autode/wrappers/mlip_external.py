@@ -17,9 +17,14 @@ Reference:
 
 from typing import List, Tuple, Optional, Dict, Any
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import os
 import subprocess
 import json
+import time
+import urllib.error
+import urllib.request
 
 from autode.wrappers.keywords.orca6 import (
     MLIPConfig,
@@ -53,6 +58,47 @@ def _allow_direct_fallbacks() -> bool:
     return os.environ.get("AUTODE_MLIP_ALLOW_DIRECT_FALLBACKS", "").lower() in {
         "1", "true", "yes", "on"
     }
+
+
+
+def _retry_after_delay(headers: Any, retry_index: int) -> float:
+    """Seconds to wait before retrying, honouring a server's Retry-After header.
+
+    The header may be a delay in seconds or an HTTP date; both are accepted. When it is absent
+    or unparseable, back off exponentially, capped at a minute.
+    """
+    value = headers.get("Retry-After") if headers is not None else None
+    if value:
+        try:
+            return max(0.0, float(value))
+        except ValueError:
+            try:
+                when = parsedate_to_datetime(value)
+                if when.tzinfo is None:
+                    when = when.replace(tzinfo=timezone.utc)
+                return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+            except (TypeError, ValueError, OverflowError):
+                pass
+    return min(60.0, float(2**retry_index))
+
+
+def _urlopen_admission(request: urllib.request.Request, *, timeout: float):
+    """urlopen that waits out a queued MLIP server instead of failing the calculation.
+
+    A shared GPU server answers 429 or 503 when its admission queue is full, which is a
+    "come back shortly", not an error. Treating it as one aborts an optimization mid-run
+    whenever the server happens to be busy. Every other status still raises immediately.
+    """
+    for retry_index in range(6):
+        try:
+            return urllib.request.urlopen(request, timeout=timeout)
+        except urllib.error.HTTPError as error:
+            if error.code not in {429, 503} or retry_index == 5:
+                raise
+            delay = _retry_after_delay(error.headers, retry_index)
+            error.close()
+            time.sleep(delay)
+    raise AssertionError("unreachable")
 
 
 def check_mlip_server(server_url: str) -> bool:
@@ -190,7 +236,7 @@ def run_mlip_single_point(
             method="POST",
         )
 
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with _urlopen_admission(req, timeout=30) as response:
             result = json.loads(response.read().decode())
 
         # Handle both 'forces' and 'gradient' response formats
@@ -246,10 +292,41 @@ OUTPUT_FILE=$2
 python3 - "$INPUT_FILE" "$OUTPUT_FILE" << 'PYTHON_EOF'
 import sys
 import json
+import time
+import urllib.error
 import urllib.request
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 INPUT_FILE = sys.argv[1]
 OUTPUT_FILE = sys.argv[2]
+
+def retry_after_delay(headers, retry_index):
+    value = headers.get("Retry-After") if headers is not None else None
+    if value:
+        try:
+            return max(0.0, float(value))
+        except ValueError:
+            try:
+                when = parsedate_to_datetime(value)
+                if when.tzinfo is None:
+                    when = when.replace(tzinfo=timezone.utc)
+                return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+            except (TypeError, ValueError, OverflowError):
+                pass
+    return min(60.0, float(2**retry_index))
+
+def urlopen_admission(request, timeout):
+    for retry_index in range(6):
+        try:
+            return urllib.request.urlopen(request, timeout=timeout)
+        except urllib.error.HTTPError as error:
+            if error.code not in {{429, 503}} or retry_index == 5:
+                raise
+            delay = retry_after_delay(error.headers, retry_index)
+            error.close()
+            time.sleep(delay)
+    raise AssertionError("unreachable")
 
 def parse_orca_extopt_input(filename):
     """Parse ORCA ExtOpt input file."""
@@ -290,7 +367,7 @@ url = "{server_url}/calculate"
 data = json.dumps(payload).encode("utf-8")
 req = urllib.request.Request(url, data=data, headers={{"Content-Type": "application/json"}})
 
-with urllib.request.urlopen(req, timeout=60) as response:
+with urlopen_admission(req, timeout=60) as response:
     result = json.loads(response.read().decode())
 
 energy = result["energy"]

@@ -56,7 +56,7 @@ architecture/GPU you're building for**:
 | target env | run the installer on | why |
 |------------|----------------------|-----|
 | x86 CPU (`env-x86`) | **gpg-head** | x86, glibc 2.39, egress; the `.so` works on all Ubuntu x86 nodes |
-| x86 GPU (`env-gpu-x86`) | **gpg-boltzmann** (`srun -p gpu-x86 --gres=gpu:1`) | its glibc-2.28 `.so` + A100/A30; layers the x86 pyscf venv |
+| x86 GPU (`env-gpu-x86-v3`) | **gpg-boltzmann** (`srun -p gpu-x86 --gres=gpu:1`) | its glibc-2.28 `.so` + A100/A30; layers the x86 pyscf venv |
 | ARM64 GPU (`env-gpu-arm64`) | a **GH200** (`srun -p gpu-gh --gres=gpu:1`) | aarch64 `.so`; layers the ARM64 pyscf venv |
 
 Compute nodes with **no egress** (the EPYC `cpu-epyc` nodes) can't download packages — the
@@ -67,7 +67,7 @@ installer detects a missing `uv`/egress and tells you to use an egress node inst
 | you're on | env | backends wired |
 |-----------|-----|----------------|
 | x86_64, no GPU (EPYC / head) | `env-x86` | ORCA*, VeloxChem, g-xTB |
-| x86_64 + GPU (boltzmann) | `env-gpu-x86` | + UMA (MLIP), GPU4PySCF, MetalloGen `-c mlip` |
+| x86_64 + GPU (boltzmann) | `env-gpu-x86-v3` | + UMA (MLIP), GPU4PySCF, MetalloGen `-c mlip` |
 | ARM64 + GPU (GH200) | `env-gpu-arm64` | + UMA, GPU4PySCF, MetalloGen, VeloxChem(CPU) |
 
 \* ORCA is external/license-gated — see below.
