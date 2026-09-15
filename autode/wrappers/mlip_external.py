@@ -26,6 +26,7 @@ import time
 import urllib.error
 import urllib.request
 
+from autode.constants import Constants
 from autode.wrappers.keywords.orca6 import (
     MLIPConfig,
     ExtOptKeywords,
@@ -61,12 +62,20 @@ def _allow_direct_fallbacks() -> bool:
 
 
 
-# 1 Bohr expressed in Angstrom: converts a gradient per Angstrom to a gradient per Bohr.
-ANGSTROM_PER_BOHR = 0.529177210903
+def _capped(seconds: float) -> float:
+    """Clamp a server-supplied delay into [0, 60] seconds.
+
+    A Retry-After of 3600 would stall one single point for an hour, and a header of "inf"
+    parses as a float that makes time.sleep raise OverflowError straight out of the retry
+    loop -- an uncaught crash rather than the graceful wait this function exists to provide.
+    """
+    if seconds != seconds:  # NaN
+        return 0.0
+    return min(60.0, max(0.0, seconds))
 
 
 def _retry_after_delay(headers: Any, retry_index: int) -> float:
-    """Seconds to wait before retrying, honouring a server's Retry-After header.
+    """Seconds to wait before retrying, honoring a server's Retry-After header.
 
     The header may be a delay in seconds or an HTTP date; both are accepted. When it is absent
     or unparseable, back off exponentially, capped at a minute.
@@ -74,13 +83,13 @@ def _retry_after_delay(headers: Any, retry_index: int) -> float:
     value = headers.get("Retry-After") if headers is not None else None
     if value:
         try:
-            return max(0.0, float(value))
+            return _capped(float(value))
         except ValueError:
             try:
                 when = parsedate_to_datetime(value)
                 if when.tzinfo is None:
                     when = when.replace(tzinfo=timezone.utc)
-                return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+                return _capped((when - datetime.now(timezone.utc)).total_seconds())
             except (TypeError, ValueError, OverflowError):
                 pass
     return min(60.0, float(2**retry_index))
@@ -305,17 +314,25 @@ from email.utils import parsedate_to_datetime
 INPUT_FILE = sys.argv[1]
 OUTPUT_FILE = sys.argv[2]
 
+# 1 Bohr in Angstrom. The gateway reports dE/dAngstrom; ORCA's .engrad wants dE/dBohr.
+ANGSTROM_TO_BOHR = 1.8897259886
+
+def _capped(seconds):
+    if seconds != seconds:  # NaN
+        return 0.0
+    return min(60.0, max(0.0, seconds))
+
 def retry_after_delay(headers, retry_index):
     value = headers.get("Retry-After") if headers is not None else None
     if value:
         try:
-            return max(0.0, float(value))
+            return _capped(float(value))
         except ValueError:
             try:
                 when = parsedate_to_datetime(value)
                 if when.tzinfo is None:
                     when = when.replace(tzinfo=timezone.utc)
-                return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+                return _capped((when - datetime.now(timezone.utc)).total_seconds())
             except (TypeError, ValueError, OverflowError):
                 pass
     return min(60.0, float(2**retry_index))
@@ -332,39 +349,53 @@ def urlopen_admission(request, timeout):
             time.sleep(delay)
     raise AssertionError("unreachable")
 
-def parse_orca_extopt_input(filename):
-    """Parse ORCA ExtOpt input file."""
-    with open(filename, 'r') as f:
-        lines = f.readlines()
+def strip_comments(text):
+    return text.split("#")[0].strip()
 
-    n_atoms = int(lines[0].strip())
-    atoms = []
-    coords = []
+def read_descriptor(filename):
+    """Read ORCA's 5-line ExtOpt descriptor: xyz name, charge, mult, ncores, dograd."""
+    with open(filename) as f:
+        xyzname = strip_comments(f.readline())
+        charge = int(strip_comments(f.readline()))
+        mult = int(strip_comments(f.readline()))
+        ncores = int(strip_comments(f.readline()))
+        dograd = bool(int(strip_comments(f.readline())))
+    return xyzname, charge, mult, ncores, dograd
 
-    for i in range(2, 2 + n_atoms):
-        parts = lines[i].split()
-        atoms.append(parts[0])
-        coords.append([float(parts[1]), float(parts[2]), float(parts[3])])
-
+def read_xyz(filename):
+    with open(filename) as f:
+        n_atoms = int(f.readline())
+        f.readline()
+        atoms, coords = [], []
+        for _ in range(n_atoms):
+            parts = f.readline().split()
+            atoms.append(parts[0])
+            coords.append([float(x) for x in parts[1:4]])
     return atoms, coords
 
-def write_orca_extopt_output(filename, energy, forces):
-    """Write ORCA ExtOpt output file."""
-    with open(filename, 'w') as f:
-        f.write(f"{{energy:.10f}}\\n")
-        for fx, fy, fz in forces:
-            f.write(f"{{fx:.10f}} {{fy:.10f}} {{fz:.10f}}\\n")
+def write_engrad(filename, n_atoms, energy, dograd, gradient):
+    """Write ORCA .engrad: one gradient COMPONENT per line, in Hartree/Bohr."""
+    with open(filename, "w") as f:
+        f.write("#\\n# Number of atoms\\n#\\n")
+        f.write("%d\\n" % n_atoms)
+        f.write("#\\n# Total energy [Eh]\\n#\\n")
+        f.write("%.12e\\n" % energy)
+        if dograd:
+            f.write("#\\n# Gradient [Eh/Bohr] A1X, A1Y, A1Z, A2X, ...\\n#\\n")
+            for g in gradient:
+                f.write("% .12e\\n" % (g / ANGSTROM_TO_BOHR))
 
 # Main
-atoms, coords = parse_orca_extopt_input(INPUT_FILE + ".xyz")
+xyzname, charge, mult, ncores, dograd = read_descriptor(INPUT_FILE)
+atoms, coords = read_xyz(xyzname)
 
 payload = {{
     "atoms": atoms,
     "coordinates": coords,
-    "charge": 0,
-    "mult": 1,
+    "charge": charge,
+    "mult": mult,
     "model": "{model}",
-    "dograd": True,
+    "dograd": dograd,
 }}
 
 url = "{server_url}/calculate"
@@ -375,9 +406,26 @@ with urlopen_admission(req, timeout=60) as response:
     result = json.loads(response.read().decode())
 
 energy = result["energy"]
-forces = result.get("forces", [[0, 0, 0]] * len(atoms))
 
-write_orca_extopt_output(OUTPUT_FILE, energy, forces)
+# The gateway returns "gradient" (flat, Hartree/Angstrom). Other servers may return "forces"
+# as triples, which are the NEGATED gradient. Never default to zeros: a zero gradient makes
+# ORCA declare the input geometry converged, with no error anywhere.
+if "gradient" in result:
+    gradient = [float(g) for g in result["gradient"]]
+elif "forces" in result:
+    gradient = [-float(c) for triple in result["forces"] for c in triple]
+else:
+    raise KeyError(
+        "MLIP server returned neither 'gradient' nor 'forces'; refusing to write a zero "
+        "gradient that ORCA would read as a converged geometry. Keys: %r" % sorted(result)
+    )
+
+if dograd and len(gradient) != 3 * len(atoms):
+    raise ValueError("gradient length %d != 3*natoms %d" % (len(gradient), 3 * len(atoms)))
+if not all(g == g and abs(g) != float("inf") for g in gradient):
+    raise ValueError("MLIP server returned a nonfinite gradient")
+
+write_engrad(OUTPUT_FILE, len(atoms), energy, dograd, gradient)
 PYTHON_EOF
 '''
 
@@ -532,6 +580,10 @@ def mlip_preoptimize(
     coords = [(a.label, *a.coord) for a in molecule.atoms]
     current_coords = np.array([[x, y, z] for _, x, y, z in coords])
 
+    # The force belonging to `current_coords` as they stand. Stays None if the loop never runs
+    # (max_steps=0) or the server never returns forces, which the exhaustion warning checks.
+    max_force = None
+
     for step in range(max_steps):
         # Get energy and forces
         result = run_mlip_single_point(
@@ -553,7 +605,7 @@ def mlip_preoptimize(
         # anyone asked for.
         forces = np.array(result.forces)
         max_force_per_angstrom = float(np.max(np.abs(forces)))
-        max_force = max_force_per_angstrom * ANGSTROM_PER_BOHR
+        max_force = max_force_per_angstrom * Constants.a0_to_ang
 
         if max_force < convergence:
             logger.info(
@@ -567,17 +619,28 @@ def mlip_preoptimize(
         # length, and is deliberately left as it was.
         step_size = 0.1
         current_coords += step_size * forces
+        # `max_force` now describes the geometry we just left, not the one we hold. Clear it so
+        # the exhaustion warning below cannot quote a force for coordinates it is not returning.
+        max_force = None
     else:
         # Falling out of the loop means max_steps was exhausted without meeting the criterion,
         # which used to happen silently: the caller received a molecule that looks optimized and
         # had no way to tell. Measured across one campaign's ensembles, 0 of 54 conformers ever
         # met the default threshold, every one of them hit the cap, and nothing said so.
-        logger.warning(
-            f"MLIP pre-optimization did NOT converge in {max_steps} steps: final max force "
-            f"{max_force:.2e} Ha/Bohr against a {convergence:.1e} Ha/Bohr criterion. The "
-            f"geometry is returned anyway -- it is a pre-optimization, not a minimum -- but do "
-            f"not treat it as converged."
-        )
+        if max_steps < 1:
+            logger.warning(
+                f"MLIP pre-optimization ran no steps (max_steps={max_steps}); the geometry is "
+                f"returned unchanged."
+            )
+        else:
+            # `max_force` is None here by construction: the last thing the loop body does is
+            # take a step and clear it. Report the criterion and the step count rather than a
+            # force belonging to a geometry we already moved away from.
+            logger.warning(
+                f"MLIP pre-optimization did NOT converge in {max_steps} steps against a "
+                f"{convergence:.1e} Ha/Bohr criterion. The geometry is returned anyway -- it is "
+                f"a pre-optimization, not a minimum -- but do not treat it as converged."
+            )
 
     # Create new molecule with optimized coordinates
     from autode import Atom
