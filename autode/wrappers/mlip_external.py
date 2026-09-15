@@ -61,6 +61,10 @@ def _allow_direct_fallbacks() -> bool:
 
 
 
+# 1 Bohr expressed in Angstrom: converts a gradient per Angstrom to a gradient per Bohr.
+ANGSTROM_PER_BOHR = 0.529177210903
+
+
 def _retry_after_delay(headers: Any, retry_index: int) -> float:
     """Seconds to wait before retrying, honouring a server's Retry-After header.
 
@@ -511,10 +515,13 @@ def mlip_preoptimize(
         model: MLIP model name
         server_url: MLIP server URL
         max_steps: Maximum optimization steps
-        convergence: Force convergence threshold (Hartree/Bohr)
+        convergence: Force convergence threshold, Hartree/Bohr. The server reports forces in
+            Hartree/Angstrom; they are converted here before the test.
 
     Returns:
-        Pre-optimized molecule
+        Pre-optimized molecule. Not necessarily a converged one -- check the log; exhausting
+        max_steps warns rather than raising, because a partly relaxed geometry is still a
+        better DFT starting point than the input.
     """
     from autode import Molecule
     import numpy as np
@@ -539,16 +546,38 @@ def mlip_preoptimize(
             logger.warning("MLIP did not return forces, stopping pre-optimization")
             break
 
+        # UNITS. The server returns a gradient in Hartree/Angstrom, so `result.forces` is in
+        # Hartree/Angstrom too (run_mlip_single_point negates gradient_hartree_per_angstrom).
+        # `convergence` is documented, and passed by callers, in Hartree/Bohr. Comparing the
+        # two directly tested the wrong quantity and made the criterion 1.89x stricter than
+        # anyone asked for.
         forces = np.array(result.forces)
-        max_force = np.max(np.abs(forces))
+        max_force_per_angstrom = float(np.max(np.abs(forces)))
+        max_force = max_force_per_angstrom * ANGSTROM_PER_BOHR
 
         if max_force < convergence:
-            logger.info(f"MLIP pre-optimization converged in {step + 1} steps")
+            logger.info(
+                f"MLIP pre-optimization converged in {step + 1} steps "
+                f"(max force {max_force:.2e} Ha/Bohr)"
+            )
             break
 
-        # Simple steepest descent update
+        # Simple steepest descent update. `forces` is Hartree/Angstrom and `current_coords` is
+        # Angstrom, so step_size carries Angstrom^2/Hartree; it is a damping constant, not a
+        # length, and is deliberately left as it was.
         step_size = 0.1
         current_coords += step_size * forces
+    else:
+        # Falling out of the loop means max_steps was exhausted without meeting the criterion,
+        # which used to happen silently: the caller received a molecule that looks optimized and
+        # had no way to tell. Measured across one campaign's ensembles, 0 of 54 conformers ever
+        # met the default threshold, every one of them hit the cap, and nothing said so.
+        logger.warning(
+            f"MLIP pre-optimization did NOT converge in {max_steps} steps: final max force "
+            f"{max_force:.2e} Ha/Bohr against a {convergence:.1e} Ha/Bohr criterion. The "
+            f"geometry is returned anyway -- it is a pre-optimization, not a minimum -- but do "
+            f"not treat it as converged."
+        )
 
     # Create new molecule with optimized coordinates
     from autode import Atom
