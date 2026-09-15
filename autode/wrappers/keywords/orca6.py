@@ -599,8 +599,9 @@ class MLIPConfig:
     @staticmethod
     def get_default_server() -> str:
         """Get default MLIP server URL based on environment."""
-        # Use the gpg-head gateway for load-balanced access
-        return "http://gpg-head:8080"
+        # AUTODE_MLIP_SERVER_URL overrides the cluster gateway; same switch as mlip_external.
+        import os
+        return os.environ.get("AUTODE_MLIP_SERVER_URL", "http://gpg-head:8080")
 
     def __repr__(self) -> str:
         return f"MLIPConfig(model={self.model}, server={self.server_url})"
@@ -661,7 +662,7 @@ class MLIPNEBKeywords(NEBKeywords):
     ):
         super().__init__(n_images=n_images, ts_search=True, climbing_image=True)
         self.mlip_model = mlip_model
-        self.server_url = server_url or "http://gpg-head:8080"
+        self.server_url = server_url or self.get_default_server()
 
     def to_orca_keyword(self) -> str:
         return "NEB-TS ExtOpt"

@@ -45,7 +45,9 @@ except ImportError:
 # Normal operation has exactly one default: the JSON router.  Direct JSON
 # backends are an administrator-only escape hatch, and the :5003 entries use a
 # different multipart/file protocol that is not equivalent to /calculate.
-ROUTER_URL = "http://gpg-head:8080"
+# The gateway this package was developed against. Off-cluster, point it elsewhere with
+# AUTODE_MLIP_SERVER_URL; there is no other switch, and the hostname is not resolvable outside.
+ROUTER_URL = os.environ.get("AUTODE_MLIP_SERVER_URL", "http://gpg-head:8080")
 DEFAULT_MLIP_SERVERS = {"gpg-router": ROUTER_URL}
 DIRECT_MLIP_FALLBACKS = {
     "gpg-file-protocol": "http://gpg-boltzmann:5003",
